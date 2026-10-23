@@ -1,0 +1,17 @@
+# dependencies and build output
+/node_modules
+/.next/
+/out/
+/build/
+/dist/
+
+# local environment files (commit only the example template)
+.env*
+!.env.example
+
+# deployment and editor metadata
+.vercel
+.vscode
+*.log
+Thumbs.db
+.DS_Store
