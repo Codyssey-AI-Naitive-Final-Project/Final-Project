@@ -5,7 +5,7 @@ import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 
 type Tab = "home" | "records" | "plan" | "coach";
-type Activity = { id: number | string; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user"; distanceKm?: number | null; durationMinutes?: number };
+type Activity = { id: number | string; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user"; distanceKm?: number | null; durationMinutes?: number; occurredAt?: string };
 type CoachContext = {
   goal: string;
   experience: string;
@@ -120,11 +120,13 @@ export default function Home() {
       setAuthReady(true);
       if (nextUser) { setAuthMessage(""); void loadAccountData(nextUser.id); }
       else {
-        setActivities((current) => [...current.filter((activity) => activity.source === "user"), ...initialActivities]);
         try {
           const stored = localStorage.getItem(ACTIVITY_STORAGE_KEY);
-          if (stored) setActivities([...JSON.parse(stored) as Activity[], ...initialActivities]);
-        } catch { /* Keep the current view if local data cannot be read. */ }
+          if (stored) {
+            const parsed = JSON.parse(stored) as Activity[];
+            setActivities([...parsed.filter((activity) => activity.source === "user"), ...initialActivities]);
+          } else setActivities(initialActivities);
+        } catch { setActivities(initialActivities); }
       }
     });
     return () => { active = false; subscription.unsubscribe(); };
@@ -145,7 +147,7 @@ export default function Home() {
       const records: Activity[] = (rows ?? []).map((row) => {
         const kind = row.activity_type as Activity["kind"];
         const distanceKm = row.distance_km === null ? null : Number(row.distance_km);
-        return { id: row.id, kind, title: row.title, distanceKm, durationMinutes: row.duration_minutes, rpe: row.rpe, detail: kind === "RUN" && distanceKm ? `${distanceKm} km · ${row.duration_minutes}분 · RPE ${row.rpe}` : `${row.duration_minutes}분 · RPE ${row.rpe}`, date: new Date(row.occurred_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }), color: kind === "RUN" ? "mint" : kind === "FOOTBALL" ? "orange" : "blue", source: "user" };
+        return { id: row.id, kind, title: row.title, distanceKm, durationMinutes: row.duration_minutes, rpe: row.rpe, detail: kind === "RUN" && distanceKm ? `${distanceKm} km · ${row.duration_minutes}분 · RPE ${row.rpe}` : `${row.duration_minutes}분 · RPE ${row.rpe}`, date: new Date(row.occurred_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }), occurredAt: row.occurred_at, color: kind === "RUN" ? "mint" : kind === "FOOTBALL" ? "orange" : "blue", source: "user" };
       });
       setActivities([...records, ...initialActivities]);
       setStorageError("");
@@ -201,7 +203,7 @@ export default function Home() {
     const userRows = stored.filter((item) => item.source === "user");
     if (userRows.length === 0) { setAuthMessage("가져올 브라우저 기록이 없습니다."); return; }
     setAccountBusy(true);
-    const { error } = await supabase.from("activity_records").insert(userRows.map((item) => ({ user_id: supabaseUser.id, activity_type: item.kind, title: item.title, distance_km: item.distanceKm ?? null, duration_minutes: item.durationMinutes ?? Number(item.detail.match(/(\d+)분/)?.[1] ?? 1), rpe: item.rpe, occurred_at: new Date().toISOString() })));
+    const { error } = await supabase.from("activity_records").insert(userRows.map((item) => ({ user_id: supabaseUser.id, activity_type: item.kind, title: item.title, distance_km: item.distanceKm ?? null, duration_minutes: item.durationMinutes ?? Number(item.detail.match(/(\d+)분/)?.[1] ?? 1), rpe: item.rpe, occurred_at: item.occurredAt ?? new Date().toISOString() })));
     if (error) setStorageError("브라우저 기록을 계정으로 옮기지 못했어요.");
     else { localStorage.removeItem(ACTIVITY_STORAGE_KEY); await loadAccountData(supabaseUser.id); setAuthMessage(`${userRows.length}개 기록을 계정으로 옮겼어요.`); }
     setAccountBusy(false);
@@ -211,12 +213,13 @@ export default function Home() {
     event.preventDefault();
     const activityKind: Activity["kind"] = kind === "러닝" ? "RUN" : kind === "축구" ? "FOOTBALL" : "OTHER";
     const title = kind === "러닝" ? "러닝 기록" : kind === "축구" ? "축구 기록" : "운동 기록";
-    const newActivity: Activity = { id: Date.now(), kind: activityKind, title, detail: kind === "러닝" ? `${distance} km · ${duration}분 · RPE ${rpe}` : `${duration}분 · RPE ${rpe}`, date: "방금 전", color: kind === "러닝" ? "mint" : kind === "축구" ? "orange" : "blue", rpe: Number(rpe), source: "user", distanceKm: kind === "러닝" ? Number(distance) : null, durationMinutes: Number(duration) };
+    const newActivity: Activity = { id: Date.now(), kind: activityKind, title, detail: kind === "러닝" ? `${distance} km · ${duration}분 · RPE ${rpe}` : `${duration}분 · RPE ${rpe}`, date: "방금 전", occurredAt: new Date().toISOString(), color: kind === "러닝" ? "mint" : kind === "축구" ? "orange" : "blue", rpe: Number(rpe), source: "user", distanceKm: kind === "러닝" ? Number(distance) : null, durationMinutes: Number(duration) };
     if (supabaseUser && supabase) {
       const { data, error } = await supabase.from("activity_records").insert({ user_id: supabaseUser.id, activity_type: activityKind, title, distance_km: newActivity.distanceKm ?? null, duration_minutes: Number(duration), rpe: Number(rpe) }).select("id, occurred_at").single();
       if (error) { setStorageError("계정에 기록을 저장하지 못했어요. 연결 상태를 확인해 주세요."); return; }
       newActivity.id = data.id;
       newActivity.date = new Date(data.occurred_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      newActivity.occurredAt = data.occurred_at;
       setActivities((current) => [newActivity, ...current.filter((activity) => activity.source === "user"), ...initialActivities]);
       setStorageError("");
     } else {
@@ -332,7 +335,8 @@ export default function Home() {
               {storageError && <p className="form-error" role="alert">{storageError}</p>}
               <button className="text-button clear-activities" type="button" onClick={clearUserActivities}>내 기록 삭제</button>
             </form>
-            <ActivityList activities={activities} title="최근 기록" />
+            <ActivityList activities={activities.filter((activity) => activity.source === "user")} title="내 기록" emptyMessage="운동을 저장하면 여기에 보여요." />
+            {!supabaseUser && <ActivityList activities={initialActivities} title="예시 기록 · 데모" />}
           </section>
         )}
         {tab === "plan" && <PlanView />}
@@ -391,6 +395,23 @@ function PageHeading({ eyebrow, title, description }: { eyebrow: string; title: 
 }
 
 function HomeView({ activities, onNavigate, userName }: { activities: Activity[]; onNavigate: (tab: Tab) => void; userName: string }) {
+  const now = new Date();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  weekStart.setHours(0, 0, 0, 0);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const personalActivities = activities.filter((activity) => activity.source === "user");
+  const inPeriod = (activity: Activity, start: Date) => {
+    if (!activity.occurredAt) return false;
+    const occurredAt = new Date(activity.occurredAt);
+    return !Number.isNaN(occurredAt.getTime()) && occurredAt >= start && occurredAt <= now;
+  };
+  const thisWeek = personalActivities.filter((activity) => inPeriod(activity, weekStart));
+  const thisMonth = personalActivities.filter((activity) => inPeriod(activity, monthStart));
+  const weekRunningKm = thisWeek.filter((activity) => activity.kind === "RUN").reduce((total, activity) => total + (activity.distanceKm ?? 0), 0);
+  const monthRunningKm = thisMonth.filter((activity) => activity.kind === "RUN").reduce((total, activity) => total + (activity.distanceKm ?? 0), 0);
+  const activityBreakdown = `러닝 ${thisWeek.filter((activity) => activity.kind === "RUN").length} · 축구 ${thisWeek.filter((activity) => activity.kind === "FOOTBALL").length} · 기타 ${thisWeek.filter((activity) => activity.kind === "OTHER").length}`;
+
   return <section className="page-section home-page">
     <div className="welcome-row"><div><p className="eyebrow">YOUR WEEKLY RHYTHM</p><h1>안녕하세요{userName ? `, ${userName}님` : ""} <span className="wave">✳</span></h1><p className="page-description">오늘 몸의 리듬은 어떤가요?</p></div><button className="date-pill">이번 주 <span>⌄</span></button></div>
     <section className="hero-card">
@@ -400,16 +421,16 @@ function HomeView({ activities, onNavigate, userName }: { activities: Activity[]
 
     <div className="section-title-row"><div><p className="eyebrow">YOUR OVERVIEW</p><h2>이번 주 요약</h2></div><button className="text-button" onClick={() => onNavigate("records")}>기록 전체 보기 <span>→</span></button></div>
     <section className="stats-grid">
-      <StatCard label="러닝 거리" value="12.4" unit="km" change="지난주보다 8% 더" icon="↗" tone="mint" />
-      <StatCard label="운동 횟수" value="3" unit="회" change="러닝 2 · 풋살 1" icon="✳" tone="lilac" />
-      <StatCard label="이번 달" value="38.2" unit="km" change="목표 50 km 중 76%" icon="◉" tone="peach" />
+      <StatCard label="이번 주 러닝" value={weekRunningKm.toFixed(1)} unit="km" change={thisWeek.length ? "내 운동 기록 기준" : "이번 주 기록 없음"} icon="↗" tone="mint" />
+      <StatCard label="이번 주 운동" value={String(thisWeek.length)} unit="회" change={thisWeek.length ? activityBreakdown : "운동 기록을 남겨보세요"} icon="✳" tone="lilac" />
+      <StatCard label="이번 달 러닝" value={monthRunningKm.toFixed(1)} unit="km" change={thisMonth.length ? `${thisMonth.length}개 운동 기록 기준` : "이번 달 기록 없음"} icon="◉" tone="peach" />
     </section>
 
     <div className="lower-grid">
-      <div className="lower-main"><div className="section-title-row compact"><div><p className="eyebrow">RECENT ACTIVITY</p><h2>최근 운동</h2></div><button className="text-button" onClick={() => onNavigate("records")}>더 보기 <span>→</span></button></div><ActivityList activities={activities.slice(0, 2)} /></div>
+      <div className="lower-main"><div className="section-title-row compact"><div><p className="eyebrow">RECENT ACTIVITY</p><h2>최근 운동</h2></div><button className="text-button" onClick={() => onNavigate("records")}>더 보기 <span>→</span></button></div><ActivityList activities={personalActivities.slice(0, 2)} emptyMessage="내 운동 기록을 저장하면 여기에 보여요." /></div>
       <aside className="coach-promo"><div className="promo-top"><span className="promo-spark">✳</span><span className="demo-badge dark">AI COACH</span></div><p className="eyebrow">A LITTLE GUIDANCE</p><h3>운동 사이의<br />균형을 찾아봐요.</h3><p className="promo-description">달리기뿐 아니라 축구, 등산 같은 활동도 함께 고려해요.</p><button className="promo-link" onClick={() => onNavigate("coach")}>코치와 대화하기 <span>→</span></button><div className="promo-decoration">✳</div></aside>
     </div>
-    <p className="prototype-note">계정 운동 기록은 저장됩니다. 예시 기록과 요약 수치는 데모 데이터입니다.</p>
+    <p className="prototype-note">홈 요약과 최근 운동은 내가 입력한 기록만 반영합니다. 예시 데이터는 기록 화면에 따로 표시됩니다.</p>
   </section>;
 }
 
@@ -417,8 +438,8 @@ function StatCard({ label, value, unit, change, icon, tone }: { label: string; v
   return <article className="stat-card card"><div className="stat-top"><span>{label}</span><span className={`stat-icon ${tone}`}>{icon}</span></div><div className="stat-value">{value}<small>{unit}</small></div><p>{change}</p></article>;
 }
 
-function ActivityList({ activities, title }: { activities: Activity[]; title?: string }) {
-  return <div className="activity-list card">{title && <h2 className="list-heading">{title}</h2>}{activities.map((activity) => <article className="activity-row" key={activity.id}><div className={`activity-icon ${activity.color}`}>{activity.kind === "RUN" ? "↗" : activity.kind === "FOOTBALL" ? "◉" : "✳"}</div><div className="activity-info"><h3>{activity.title}</h3><p>{activity.detail}</p></div><span className="activity-date">{activity.date}</span><button className="row-arrow" aria-label={`${activity.title} 상세`}>›</button></article>)}</div>;
+function ActivityList({ activities, title, emptyMessage }: { activities: Activity[]; title?: string; emptyMessage?: string }) {
+  return <div className="activity-list card">{title && <h2 className="list-heading">{title}</h2>}{activities.length === 0 && emptyMessage && <p className="form-note">{emptyMessage}</p>}{activities.map((activity) => <article className="activity-row" key={activity.id}><div className={`activity-icon ${activity.color}`}>{activity.kind === "RUN" ? "↗" : activity.kind === "FOOTBALL" ? "◉" : "✳"}</div><div className="activity-info"><h3>{activity.title}</h3><p>{activity.detail}</p></div><span className="activity-date">{activity.date}</span><button className="row-arrow" aria-label={`${activity.title} 상세`}>›</button></article>)}</div>;
 }
 
 function PlanView() {
