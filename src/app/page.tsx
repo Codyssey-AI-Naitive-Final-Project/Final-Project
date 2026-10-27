@@ -305,7 +305,6 @@ export default function Home() {
         </button>
         <div className="top-actions">
           {supabaseUser ? <><span className="account-email" title={supabaseUser.email ?? "구글 계정"}>{supabaseUser.email ?? "로그인됨"}</span><button className="account-button" onClick={signOut}>로그아웃</button></> : <button className="account-button" onClick={signInWithGoogle} disabled={!authReady || authPending}>{authPending ? "Google 연결 중…" : "Google 로그인"}</button>}
-          <button className="icon-button" aria-label="알림">♧<span className="notification-dot" /></button>
           {supabaseUser ? <span className="avatar" aria-label="로그인 사용자">{(supabaseUser.user_metadata?.full_name as string | undefined)?.slice(0, 1) ?? "나"}</span> : <button className="avatar" aria-label="프로필">나</button>}
         </div>
       </header>
@@ -410,7 +409,7 @@ function HomeView({ activities, onNavigate, userName }: { activities: Activity[]
       <div className="lower-main"><div className="section-title-row compact"><div><p className="eyebrow">RECENT ACTIVITY</p><h2>최근 운동</h2></div><button className="text-button" onClick={() => onNavigate("records")}>더 보기 <span>→</span></button></div><ActivityList activities={activities.slice(0, 2)} /></div>
       <aside className="coach-promo"><div className="promo-top"><span className="promo-spark">✳</span><span className="demo-badge dark">AI COACH</span></div><p className="eyebrow">A LITTLE GUIDANCE</p><h3>운동 사이의<br />균형을 찾아봐요.</h3><p className="promo-description">달리기뿐 아니라 축구, 등산 같은 활동도 함께 고려해요.</p><button className="promo-link" onClick={() => onNavigate("coach")}>코치와 대화하기 <span>→</span></button><div className="promo-decoration">✳</div></aside>
     </div>
-    <p className="prototype-note">시안용 데모 데이터입니다. 개인 기록과 코치 응답은 아직 서버에 저장되지 않습니다.</p>
+    <p className="prototype-note">계정 운동 기록은 저장됩니다. 예시 기록과 요약 수치는 데모 데이터입니다.</p>
   </section>;
 }
 
