@@ -339,7 +339,7 @@ export default function Home() {
             {!supabaseUser && <ActivityList activities={initialActivities} title="예시 기록 · 데모" />}
           </section>
         )}
-        {tab === "plan" && <PlanView />}
+        {tab === "plan" && <PlanView activities={activities.filter((activity) => activity.source === "user")} />}
         {tab === "coach" && (
           <section className="page-section coach-page">
             <PageHeading eyebrow="YOUR AI COACH" title="오늘은 어떤가요?" description="운동 기록을 바탕으로 코치와 대화해보세요." />
@@ -442,7 +442,78 @@ function ActivityList({ activities, title, emptyMessage }: { activities: Activit
   return <div className="activity-list card">{title && <h2 className="list-heading">{title}</h2>}{activities.length === 0 && emptyMessage && <p className="form-note">{emptyMessage}</p>}{activities.map((activity) => <article className="activity-row" key={activity.id}><div className={`activity-icon ${activity.color}`}>{activity.kind === "RUN" ? "↗" : activity.kind === "FOOTBALL" ? "◉" : "✳"}</div><div className="activity-info"><h3>{activity.title}</h3><p>{activity.detail}</p></div><span className="activity-date">{activity.date}</span><button className="row-arrow" aria-label={`${activity.title} 상세`}>›</button></article>)}</div>;
 }
 
-function PlanView() {
-  const days = [{ day: "월", date: "20", label: "휴식", type: "rest" }, { day: "화", date: "21", label: "이지 런", type: "run" }, { day: "수", date: "22", label: "가벼운 근력", type: "strength" }, { day: "목", date: "23", label: "풋살", type: "cross" }, { day: "금", date: "24", label: "컨디션 확인", type: "today" }, { day: "토", date: "25", label: "휴식", type: "rest" }, { day: "일", date: "26", label: "롱 런", type: "run" }];
-  return <section className="page-section"><PageHeading eyebrow="YOUR WEEKLY RHYTHM" title="운동 일정" description="계획과 추가 활동을 한 주의 흐름으로 확인해요." /><div className="week-card card"><div className="week-head"><div><p className="eyebrow">OCTOBER 20 — 26</p><h2>무리하지 않는 한 주</h2></div><button className="round-arrow" aria-label="다음 주">→</button></div><div className="week-days">{days.map((item) => <div className={`day-column ${item.type === "today" ? "is-today" : ""}`} key={item.day}><span>{item.day}</span><b>{item.date}</b><i className={`day-dot ${item.type}`} /><small>{item.label}</small></div>)}</div></div><div className="section-title-row"><div><p className="eyebrow">PLAN NOTE</p><h2>이번 주 가이드</h2></div></div><div className="plan-note card"><span className="small-icon lilac-bg">✳</span><div><h3>운동 사이에 여유를 두세요.</h3><p>풋살처럼 강도가 높은 활동도 운동량으로 기록해두면 다음 러닝 일정을 조절하는 데 도움이 됩니다.</p></div></div><p className="prototype-note">일정은 현재 예시 데이터입니다. 실제 계획은 사용자 기록을 연결한 뒤 제공할 예정입니다.</p></section>;
+function startOfLocalWeek(date: Date) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return start;
+}
+
+function localDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function PlanView({ activities }: { activities: Activity[] }) {
+  const today = new Date();
+  const [weekStart, setWeekStart] = useState(() => startOfLocalWeek(today));
+  const [selectedDate, setSelectedDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+  const weekDates = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart);
+    date.setDate(weekStart.getDate() + index);
+    return date;
+  });
+  const weekEnd = weekDates[6];
+  const rangeText = weekStart.getMonth() === weekEnd.getMonth()
+    ? `${weekStart.toLocaleDateString("ko-KR", { month: "long" })} ${weekStart.getDate()}일 — ${weekEnd.getDate()}일`
+    : `${weekStart.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })} — ${weekEnd.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}`;
+  const selectedKey = localDateKey(selectedDate);
+  const selectedActivities = activities.filter((activity) => activity.occurredAt && localDateKey(new Date(activity.occurredAt)) === selectedKey);
+
+  function moveWeek(amount: number) {
+    const nextWeekStart = new Date(weekStart);
+    nextWeekStart.setDate(nextWeekStart.getDate() + amount * 7);
+    const nextSelectedDate = new Date(selectedDate);
+    nextSelectedDate.setDate(nextSelectedDate.getDate() + amount * 7);
+    setWeekStart(nextWeekStart);
+    setSelectedDate(nextSelectedDate);
+  }
+
+  function goToToday() {
+    const currentDate = new Date();
+    setWeekStart(startOfLocalWeek(currentDate));
+    setSelectedDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate()));
+  }
+
+  return <section className="page-section">
+    <PageHeading eyebrow="YOUR WEEKLY RHYTHM" title="운동 일정" description="주간 이동과 날짜 선택으로 실제 운동 기록을 확인해요." />
+    <div className="week-card card">
+      <div className="week-head">
+        <div><p className="eyebrow">{rangeText}</p><h2>주간 운동 기록</h2></div>
+        <div className="week-controls">
+          <button className="round-arrow" type="button" aria-label="이전 주" onClick={() => moveWeek(-1)}>←</button>
+          <button className="today-button" type="button" onClick={goToToday}>오늘</button>
+          <button className="round-arrow" type="button" aria-label="다음 주" onClick={() => moveWeek(1)}>→</button>
+        </div>
+      </div>
+      <div className="week-days">
+        {weekDates.map((date) => {
+          const dateKey = localDateKey(date);
+          const dayActivities = activities.filter((activity) => activity.occurredAt && localDateKey(new Date(activity.occurredAt)) === dateKey);
+          const isToday = dateKey === localDateKey(today);
+          const isSelected = dateKey === selectedKey;
+          const dotType = dayActivities.some((activity) => activity.kind === "RUN") ? "run" : dayActivities.some((activity) => activity.kind === "FOOTBALL") ? "cross" : dayActivities.length ? "strength" : isToday ? "today" : "rest";
+          return <button className={`day-column ${isToday ? "is-today" : ""} ${isSelected ? "is-selected" : ""}`} type="button" key={dateKey} aria-pressed={isSelected} onClick={() => setSelectedDate(date)}>
+            <span>{date.toLocaleDateString("ko-KR", { weekday: "short" })}</span>
+            <b>{date.getDate()}</b>
+            <i className={`day-dot ${dotType}`} />
+            <small>{dayActivities.length ? `${dayActivities.length}회 기록` : isToday ? "오늘" : "기록 없음"}</small>
+          </button>;
+        })}
+      </div>
+    </div>
+    <div className="selected-day-heading"><h2>{selectedDate.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</h2></div>
+    <ActivityList activities={selectedActivities} title="이 날짜의 운동 기록" emptyMessage="이 날짜에 저장된 운동 기록이 없어요." />
+    <div className="section-title-row"><div><p className="eyebrow">PLAN NOTE</p><h2>운동 계획</h2></div></div>
+    <div className="plan-note card"><span className="small-icon lilac-bg">✳</span><div><h3>운동 계획 저장은 다음 단계예요.</h3><p>현재 일정 화면은 실제 기록을 날짜별로 확인합니다. 반복 일정이나 추천 운동을 저장하고 재조정하는 기능은 아직 연결되지 않았어요.</p></div></div>
+  </section>;
 }
