@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 
@@ -58,9 +58,25 @@ export default function Home() {
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
+  const [authPending, setAuthPending] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const authPendingRef = useRef(false);
   const supabase = createClient();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const authErrorCode = params.get("error_code");
+    const authError = params.get("auth_error");
+    if (authErrorCode || authError) {
+      setAuthMessage(authErrorCode === "flow_state_already_used"
+        ? "로그인 요청이 이미 처리되었거나 만료됐어요. Google 로그인 버튼을 한 번만 눌러 다시 시도해 주세요."
+        : "Google 로그인에 실패했어요. 버튼을 한 번만 눌러 다시 시도해 주세요.");
+      const cleanUrl = new URL(window.location.href);
+      ["error", "error_code", "error_description", "auth_error"].forEach((key) => cleanUrl.searchParams.delete(key));
+      window.history.replaceState(window.history.state, "", `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -91,7 +107,8 @@ export default function Home() {
     let active = true;
     supabase.auth.getUser().then(({ data, error }) => {
       if (!active) return;
-      if (error) setAuthMessage("로그인 상태를 확인하지 못했어요.");
+      // Supabase reports a missing session as AuthSessionMissingError for signed-out visitors.
+      if (error && error.name !== "AuthSessionMissingError") setAuthMessage("로그인 상태를 확인하지 못했어요. 네트워크 연결 후 다시 시도해 주세요.");
       setSupabaseUser(data.user);
       setAuthReady(true);
       if (data.user) void loadAccountData(data.user.id);
@@ -101,7 +118,7 @@ export default function Home() {
       const nextUser = session?.user ?? null;
       setSupabaseUser(nextUser);
       setAuthReady(true);
-      if (nextUser) void loadAccountData(nextUser.id);
+      if (nextUser) { setAuthMessage(""); void loadAccountData(nextUser.id); }
       else {
         setActivities((current) => [...current.filter((activity) => activity.source === "user"), ...initialActivities]);
         try {
@@ -141,12 +158,23 @@ export default function Home() {
   }
 
   async function signInWithGoogle() {
+    if (authPendingRef.current) return;
     if (!supabase) {
       setAuthMessage("로그인 설정이 아직 없어요. Supabase URL과 공개 키를 설정해 주세요.");
       return;
     }
-    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } });
-    if (error) setAuthMessage("구글 로그인을 시작하지 못했어요. Supabase Google Provider 설정을 확인해 주세요.");
+    authPendingRef.current = true;
+    setAuthPending(true);
+    setAuthMessage("");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } });
+      if (error) setAuthMessage("Google 로그인을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.");
+    } catch {
+      setAuthMessage("Google 로그인을 시작하지 못했어요. 네트워크 연결을 확인하고 다시 시도해 주세요.");
+    } finally {
+      authPendingRef.current = false;
+      setAuthPending(false);
+    }
   }
 
   async function signOut() {
@@ -273,7 +301,7 @@ export default function Home() {
           <span>stride<span className="brand-period">.</span></span>
         </button>
         <div className="top-actions">
-          {supabaseUser ? <><span className="account-email" title={supabaseUser.email ?? "구글 계정"}>{supabaseUser.email ?? "로그인됨"}</span><button className="account-button" onClick={signOut}>로그아웃</button></> : <button className="account-button" onClick={signInWithGoogle} disabled={!authReady}>Google 로그인</button>}
+          {supabaseUser ? <><span className="account-email" title={supabaseUser.email ?? "구글 계정"}>{supabaseUser.email ?? "로그인됨"}</span><button className="account-button" onClick={signOut}>로그아웃</button></> : <button className="account-button" onClick={signInWithGoogle} disabled={!authReady || authPending}>{authPending ? "Google 연결 중…" : "Google 로그인"}</button>}
           <button className="icon-button" aria-label="알림">♧<span className="notification-dot" /></button>
           {supabaseUser ? <span className="avatar" aria-label="로그인 사용자">{(supabaseUser.user_metadata?.full_name as string | undefined)?.slice(0, 1) ?? "나"}</span> : <button className="avatar" aria-label="프로필">나</button>}
         </div>
