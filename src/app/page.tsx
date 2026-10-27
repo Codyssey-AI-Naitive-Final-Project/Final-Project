@@ -1,9 +1,20 @@
 "use client";
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import { createClient } from "@/lib/supabase/client";
 
 type Tab = "home" | "records" | "plan" | "coach";
-type Activity = { id: number; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user" };
+type Activity = { id: number | string; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user"; distanceKm?: number | null; durationMinutes?: number };
+type CoachContext = {
+  goal: string;
+  experience: string;
+  fatigue: string;
+  sleepHours: string;
+  painStatus: "none" | "mild" | "pain";
+  painDetails: string;
+  availableMinutes: string;
+};
 type CoachAnswer = {
   summary: string;
   coaching_message: string;
@@ -19,6 +30,7 @@ const initialActivities: Activity[] = [
   { id: 2, kind: "FOOTBALL", title: "풋살", detail: "60분 · RPE 7", date: "어제 오후 8:30", color: "orange", rpe: 7, source: "demo" },
   { id: 3, kind: "RUN", title: "천천히 달리기", detail: "6.0 km · 44분 · RPE 3", date: "10월 21일", color: "blue", rpe: 3, source: "demo" },
 ];
+const ACTIVITY_STORAGE_KEY = "stride.user-activities.v1";
 
 const navItems: { id: Tab; label: string; icon: string }[] = [
   { id: "home", label: "홈", icon: "⌂" },
@@ -30,6 +42,8 @@ const navItems: { id: Tab; label: string; icon: string }[] = [
 export default function Home() {
   const [tab, setTab] = useState<Tab>("home");
   const [activities, setActivities] = useState(initialActivities);
+  const [storageReady, setStorageReady] = useState(false);
+  const [storageError, setStorageError] = useState("");
   const [kind, setKind] = useState("러닝");
   const [distance, setDistance] = useState("");
   const [duration, setDuration] = useState("");
@@ -39,25 +53,185 @@ export default function Home() {
   const [coachAnswer, setCoachAnswer] = useState<CoachAnswer | null>(null);
   const [coachError, setCoachError] = useState("");
   const [isAsking, setIsAsking] = useState(false);
+  const [hasDataConsent, setHasDataConsent] = useState(false);
+  const [coachContext, setCoachContext] = useState<CoachContext>({ goal: "", experience: "", fatigue: "", sleepHours: "", painStatus: "none", painDetails: "", availableMinutes: "" });
+  const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const supabase = createClient();
 
-  function saveActivity(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(ACTIVITY_STORAGE_KEY);
+      if (stored) {
+        const parsed: unknown = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          const userActivities = parsed.filter((item): item is Activity =>
+            item && typeof item === "object" && item.source === "user" && typeof item.id === "number" &&
+            typeof item.title === "string" && typeof item.detail === "string" &&
+            ["RUN", "FOOTBALL", "OTHER"].includes(item.kind) && Number.isInteger(item.rpe) && item.rpe >= 1 && item.rpe <= 10
+          );
+          setActivities([...userActivities, ...initialActivities]);
+        }
+      }
+    } catch {
+      setStorageError("이 브라우저에서 저장한 기록을 불러오지 못했어요.");
+    } finally {
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthReady(true);
+      return;
+    }
+    let active = true;
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setAuthMessage("로그인 상태를 확인하지 못했어요.");
+      setSupabaseUser(data.user);
+      setAuthReady(true);
+      if (data.user) void loadAccountData(data.user.id);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return;
+      const nextUser = session?.user ?? null;
+      setSupabaseUser(nextUser);
+      setAuthReady(true);
+      if (nextUser) void loadAccountData(nextUser.id);
+      else {
+        setActivities((current) => [...current.filter((activity) => activity.source === "user"), ...initialActivities]);
+        try {
+          const stored = localStorage.getItem(ACTIVITY_STORAGE_KEY);
+          if (stored) setActivities([...JSON.parse(stored) as Activity[], ...initialActivities]);
+        } catch { /* Keep the current view if local data cannot be read. */ }
+      }
+    });
+    return () => { active = false; subscription.unsubscribe(); };
+    // The client is a stable wrapper around the configured Supabase browser client.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function loadAccountData(userId: string) {
+    if (!supabase) return;
+    setAccountBusy(true);
+    const [{ data: rows, error }, { data: profile }] = await Promise.all([
+      supabase.from("activity_records").select("id, activity_type, title, distance_km, duration_minutes, rpe, occurred_at").eq("user_id", userId).order("occurred_at", { ascending: false }).limit(100),
+      supabase.from("coach_profiles").select("goal, experience").eq("user_id", userId).maybeSingle(),
+    ]);
+    if (error) {
+      setStorageError("계정 기록을 불러오지 못했어요. Supabase 설정과 SQL 적용 여부를 확인해 주세요.");
+    } else {
+      const records: Activity[] = (rows ?? []).map((row) => {
+        const kind = row.activity_type as Activity["kind"];
+        const distanceKm = row.distance_km === null ? null : Number(row.distance_km);
+        return { id: row.id, kind, title: row.title, distanceKm, durationMinutes: row.duration_minutes, rpe: row.rpe, detail: kind === "RUN" && distanceKm ? `${distanceKm} km · ${row.duration_minutes}분 · RPE ${row.rpe}` : `${row.duration_minutes}분 · RPE ${row.rpe}`, date: new Date(row.occurred_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }), color: kind === "RUN" ? "mint" : kind === "FOOTBALL" ? "orange" : "blue", source: "user" };
+      });
+      setActivities([...records, ...initialActivities]);
+      setStorageError("");
+    }
+    if (profile) {
+      setCoachContext((current) => ({ ...current, goal: profile.goal ?? current.goal, experience: profile.experience ?? current.experience }));
+      setProfileSaved(true);
+    }
+    setAccountBusy(false);
+  }
+
+  async function signInWithGoogle() {
+    if (!supabase) {
+      setAuthMessage("로그인 설정이 아직 없어요. Supabase URL과 공개 키를 설정해 주세요.");
+      return;
+    }
+    const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } });
+    if (error) setAuthMessage("구글 로그인을 시작하지 못했어요. Supabase Google Provider 설정을 확인해 주세요.");
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) setAuthMessage("로그아웃하지 못했어요. 잠시 후 다시 시도해 주세요.");
+    else setAuthMessage("");
+  }
+
+  async function saveCoachProfile() {
+    if (!supabase || !supabaseUser) return;
+    const { error } = await supabase.from("coach_profiles").upsert({ user_id: supabaseUser.id, goal: coachContext.goal || null, experience: coachContext.experience || null, updated_at: new Date().toISOString() });
+    if (error) setStorageError("코치 목표 설정을 계정에 저장하지 못했어요.");
+    else { setProfileSaved(true); setStorageError(""); }
+  }
+
+  async function importLocalActivities() {
+    if (!supabase || !supabaseUser) return;
+    let stored: Activity[] = [];
+    try { stored = JSON.parse(localStorage.getItem(ACTIVITY_STORAGE_KEY) ?? "[]") as Activity[]; } catch { setStorageError("브라우저 기록을 읽지 못했어요."); return; }
+    const userRows = stored.filter((item) => item.source === "user");
+    if (userRows.length === 0) { setAuthMessage("가져올 브라우저 기록이 없습니다."); return; }
+    setAccountBusy(true);
+    const { error } = await supabase.from("activity_records").insert(userRows.map((item) => ({ user_id: supabaseUser.id, activity_type: item.kind, title: item.title, distance_km: item.distanceKm ?? null, duration_minutes: item.durationMinutes ?? Number(item.detail.match(/(\d+)분/)?.[1] ?? 1), rpe: item.rpe, occurred_at: new Date().toISOString() })));
+    if (error) setStorageError("브라우저 기록을 계정으로 옮기지 못했어요.");
+    else { localStorage.removeItem(ACTIVITY_STORAGE_KEY); await loadAccountData(supabaseUser.id); setAuthMessage(`${userRows.length}개 기록을 계정으로 옮겼어요.`); }
+    setAccountBusy(false);
+  }
+
+  async function saveActivity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const activityKind: Activity["kind"] = kind === "러닝" ? "RUN" : kind === "축구" ? "FOOTBALL" : "OTHER";
     const title = kind === "러닝" ? "러닝 기록" : kind === "축구" ? "축구 기록" : "운동 기록";
-    setActivities((current) => [
-      { id: Date.now(), kind: activityKind, title, detail: kind === "러닝" ? `${distance} km · ${duration}분 · RPE ${rpe}` : `${duration}분 · RPE ${rpe}`, date: "방금 전", color: kind === "러닝" ? "mint" : kind === "축구" ? "orange" : "blue", rpe: Number(rpe), source: "user" },
-      ...current,
-    ]);
+    const newActivity: Activity = { id: Date.now(), kind: activityKind, title, detail: kind === "러닝" ? `${distance} km · ${duration}분 · RPE ${rpe}` : `${duration}분 · RPE ${rpe}`, date: "방금 전", color: kind === "러닝" ? "mint" : kind === "축구" ? "orange" : "blue", rpe: Number(rpe), source: "user", distanceKm: kind === "러닝" ? Number(distance) : null, durationMinutes: Number(duration) };
+    if (supabaseUser && supabase) {
+      const { data, error } = await supabase.from("activity_records").insert({ user_id: supabaseUser.id, activity_type: activityKind, title, distance_km: newActivity.distanceKm ?? null, duration_minutes: Number(duration), rpe: Number(rpe) }).select("id, occurred_at").single();
+      if (error) { setStorageError("계정에 기록을 저장하지 못했어요. 연결 상태를 확인해 주세요."); return; }
+      newActivity.id = data.id;
+      newActivity.date = new Date(data.occurred_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      setActivities((current) => [newActivity, ...current.filter((activity) => activity.source === "user"), ...initialActivities]);
+      setStorageError("");
+    } else {
+      const updatedActivities = [newActivity, ...activities];
+      setActivities(updatedActivities);
+      try {
+        localStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify(updatedActivities.filter((activity) => activity.source === "user")));
+        setStorageError("");
+      } catch { setStorageError("기록을 브라우저에 저장하지 못했어요. 저장 공간을 확인해 주세요."); }
+    }
     setDistance("");
     setDuration("");
     setRpe("");
     setTab("records");
   }
 
+  async function clearUserActivities() {
+    if (!window.confirm(supabaseUser ? "내 계정에 저장된 운동 기록을 모두 삭제할까요?" : "이 브라우저에 저장된 내가 입력한 운동 기록을 모두 삭제할까요?")) return;
+    try {
+      if (supabaseUser && supabase) {
+        const { error } = await supabase.from("activity_records").delete().eq("user_id", supabaseUser.id);
+        if (error) throw error;
+        setActivities(initialActivities);
+      } else {
+        localStorage.removeItem(ACTIVITY_STORAGE_KEY);
+        setActivities(initialActivities);
+      }
+      setStorageError("");
+    } catch {
+      setStorageError("저장한 기록을 삭제하지 못했어요.");
+    }
+  }
+
   async function askCoach(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const submittedQuestion = question.trim();
     if (!submittedQuestion || isAsking) return;
+    if (!supabaseUser) {
+      setCoachError("계정별 운동 기록을 보호하기 위해 Google 로그인 후 이용할 수 있어요.");
+      setAsked(submittedQuestion);
+      return;
+    }
+    if (!hasDataConsent) {
+      setCoachError("기록과 입력한 컨디션 정보를 AI API로 보내는 데 동의해 주세요.");
+      return;
+    }
     setAsked(submittedQuestion);
     setCoachAnswer(null);
     setCoachError("");
@@ -66,7 +240,19 @@ export default function Home() {
       const response = await fetch("/api/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: submittedQuestion, activities: activities.slice(0, 10).map(({ kind, title, detail, date, rpe, source }) => ({ kind, title, detail, date, rpe, source })) }),
+        body: JSON.stringify({
+          question: submittedQuestion,
+          context: {
+            goal: coachContext.goal || null,
+            experience: coachContext.experience || null,
+            fatigue: coachContext.fatigue ? Number(coachContext.fatigue) : null,
+            sleep_hours: coachContext.sleepHours ? Number(coachContext.sleepHours) : null,
+            pain_status: coachContext.painStatus,
+            pain_details: coachContext.painStatus === "none" ? null : coachContext.painDetails.trim() || null,
+            available_minutes: coachContext.availableMinutes ? Number(coachContext.availableMinutes) : null,
+            consent: hasDataConsent,
+          },
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "AI 코치 요청에 실패했어요.");
@@ -87,13 +273,15 @@ export default function Home() {
           <span>stride<span className="brand-period">.</span></span>
         </button>
         <div className="top-actions">
+          {supabaseUser ? <><span className="account-email" title={supabaseUser.email ?? "구글 계정"}>{supabaseUser.email ?? "로그인됨"}</span><button className="account-button" onClick={signOut}>로그아웃</button></> : <button className="account-button" onClick={signInWithGoogle} disabled={!authReady}>Google 로그인</button>}
           <button className="icon-button" aria-label="알림">♧<span className="notification-dot" /></button>
-          <button className="avatar" aria-label="프로필">연</button>
+          {supabaseUser ? <span className="avatar" aria-label="로그인 사용자">{(supabaseUser.user_metadata?.full_name as string | undefined)?.slice(0, 1) ?? "나"}</span> : <button className="avatar" aria-label="프로필">나</button>}
         </div>
       </header>
+      {authMessage && <p className="auth-message" role="status">{authMessage}</p>}
 
       <div className="content-wrap">
-        {tab === "home" && <HomeView activities={activities} onNavigate={setTab} />}
+        {tab === "home" && <HomeView activities={activities} onNavigate={setTab} userName={supabaseUser && typeof supabaseUser.user_metadata?.full_name === "string" ? supabaseUser.user_metadata.full_name : ""} />}
         {tab === "records" && (
           <section className="page-section">
             <PageHeading eyebrow="MY MOVEMENT" title="운동 기록" description="러닝과 다른 운동을 한곳에 모아보세요." />
@@ -109,7 +297,10 @@ export default function Home() {
                 <label><span>체감 강도 (RPE 1–10)</span><input type="number" min="1" max="10" step="1" required value={rpe} onChange={(e) => setRpe(e.target.value)} placeholder="예: 5" /></label>
               </div>
               <button className="primary-button full-button" type="submit">기록 저장 <span>→</span></button>
-              <p className="form-note">현재 데모는 브라우저를 새로고침하면 입력 기록이 초기화됩니다.</p>
+              <p className="form-note">{supabaseUser ? "로그인한 계정에 저장되어 다른 기기에서도 확인할 수 있습니다." : "로그인 전 기록은 이 브라우저에만 저장됩니다. 구글 로그인 후 계정으로 옮길 수 있습니다."}</p>
+              {supabaseUser && <button className="text-button clear-activities" type="button" onClick={importLocalActivities} disabled={accountBusy}>이 브라우저 기록 계정으로 가져오기</button>}
+              {storageError && <p className="form-error" role="alert">{storageError}</p>}
+              <button className="text-button clear-activities" type="button" onClick={clearUserActivities}>내 기록 삭제</button>
             </form>
             <ActivityList activities={activities} title="최근 기록" />
           </section>
@@ -121,9 +312,25 @@ export default function Home() {
             <div className="coach-card card">
               <div className="coach-orb"><span>✳</span></div>
               <div className="coach-copy"><span className="demo-badge">AI 코치 · 연결됨</span><h2>꾸준함이 페이스를 만듭니다.</h2><p>운동 기록을 참고해 오늘의 코칭을 받아보세요. 화면의 샘플 기록은 예시로 표시됩니다.</p></div>
-              <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>이번 주 러닝 2회와 풋살 1회가 기록되어 있어요. 다음 운동은 컨디션을 먼저 확인하고 정해보세요.</p></div>
+              <div className="coach-context">
+                <div className="context-heading"><div><span className="insight-label">PERSONAL CONTEXT</span><h3>오늘의 컨디션</h3></div><span className="context-optional">선택 입력</span></div>
+                <div className="input-grid context-grid">
+                  <label><span>운동 목표</span><select value={coachContext.goal} onChange={(e) => setCoachContext((current) => ({ ...current, goal: e.target.value }))}><option value="">선택 안 함</option><option value="체력 향상">체력 향상</option><option value="5km 완주">5km 완주</option><option value="러닝 거리 늘리기">러닝 거리 늘리기</option><option value="꾸준히 운동하기">꾸준히 운동하기</option><option value="기타">기타</option></select></label>
+                  <label><span>운동 경험</span><select value={coachContext.experience} onChange={(e) => setCoachContext((current) => ({ ...current, experience: e.target.value }))}><option value="">선택 안 함</option><option value="초보">초보</option><option value="중급">중급</option><option value="숙련">숙련</option></select></label>
+                  <label><span>피로도 (1~10)</span><input type="number" min="1" max="10" step="1" value={coachContext.fatigue} onChange={(e) => setCoachContext((current) => ({ ...current, fatigue: e.target.value }))} placeholder="예: 4" /></label>
+                  <label><span>최근 수면 (시간)</span><input type="number" min="0" max="24" step="0.5" value={coachContext.sleepHours} onChange={(e) => setCoachContext((current) => ({ ...current, sleepHours: e.target.value }))} placeholder="예: 7.5" /></label>
+                  <label><span>오늘 운동 가능 시간 (분)</span><input type="number" min="1" max="360" step="1" value={coachContext.availableMinutes} onChange={(e) => setCoachContext((current) => ({ ...current, availableMinutes: e.target.value }))} placeholder="예: 30" /></label>
+                  <label><span>통증·불편감</span><select value={coachContext.painStatus} onChange={(e) => setCoachContext((current) => ({ ...current, painStatus: e.target.value as CoachContext["painStatus"], painDetails: e.target.value === "none" ? "" : current.painDetails }))}><option value="none">없음</option><option value="mild">가벼운 불편감</option><option value="pain">통증이 있음</option></select></label>
+                </div>
+                {coachContext.painStatus !== "none" && <label className="context-pain-details"><span>불편한 부위나 상황 (선택)</span><input maxLength={200} value={coachContext.painDetails} onChange={(e) => setCoachContext((current) => ({ ...current, painDetails: e.target.value }))} placeholder="진단명이 아닌 느끼는 증상만 적어주세요." /></label>}
+                <label className="data-consent"><input type="checkbox" checked={hasDataConsent} onChange={(e) => setHasDataConsent(e.target.checked)} /><span>계정에 저장된 운동 기록·목표·운동 경험과 위에 입력한 컨디션 정보를 Codyssey AI API로 보내 코칭 답변을 만드는 데 동의합니다.</span></label>
+                <p className="form-note">컨디션 정보는 현재 앱 DB에 저장하지 않고 요청에만 포함합니다. 이름·연락처 등 식별 정보는 입력하지 마세요.</p>
+                {supabaseUser && <div className="profile-save-row"><button className="text-button" type="button" onClick={saveCoachProfile}>목표·운동 경험을 계정에 저장</button><span>{profileSaved ? "계정에 저장됨" : "선택 저장"}</span></div>}
+              </div>
+              <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>{activities.some((activity) => activity.source === "user") ? `직접 입력한 운동 ${activities.filter((activity) => activity.source === "user").length}건과 최근 기록을 함께 보냅니다.` : "아직 직접 입력한 기록이 없어요. 예시 기록은 데모 데이터로 표시됩니다."}</p></div>
               {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록을 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}</div>}
-              <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" maxLength={1000} disabled={isAsking} /><button type="submit" aria-label="질문 보내기" disabled={isAsking || !question.trim()}>{isAsking ? "…" : "↑"}</button></form>
+              <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" maxLength={1000} disabled={isAsking} /><button type="submit" aria-label="질문 보내기" disabled={isAsking || !question.trim() || !storageReady || !authReady}>{isAsking ? "…" : "↑"}</button></form>
+              {!supabaseUser && <p className="form-note">AI 코치를 이용하려면 먼저 Google 로그인이 필요합니다.</p>}
               <p className="form-note">운동 조언은 참고용이며, 통증이나 건강 문제가 있으면 전문가와 상담하세요.</p>
             </div>
           </section>
@@ -153,9 +360,9 @@ function PageHeading({ eyebrow, title, description }: { eyebrow: string; title: 
   return <div className="page-heading"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="page-description">{description}</p></div>;
 }
 
-function HomeView({ activities, onNavigate }: { activities: Activity[]; onNavigate: (tab: Tab) => void }) {
+function HomeView({ activities, onNavigate, userName }: { activities: Activity[]; onNavigate: (tab: Tab) => void; userName: string }) {
   return <section className="page-section home-page">
-    <div className="welcome-row"><div><p className="eyebrow">YOUR WEEKLY RHYTHM</p><h1>안녕하세요, 연섭님 <span className="wave">✳</span></h1><p className="page-description">오늘 몸의 리듬은 어떤가요?</p></div><button className="date-pill">이번 주 <span>⌄</span></button></div>
+    <div className="welcome-row"><div><p className="eyebrow">YOUR WEEKLY RHYTHM</p><h1>안녕하세요{userName ? `, ${userName}님` : ""} <span className="wave">✳</span></h1><p className="page-description">오늘 몸의 리듬은 어떤가요?</p></div><button className="date-pill">이번 주 <span>⌄</span></button></div>
     <section className="hero-card">
       <div className="hero-copy"><span className="hero-kicker"><span className="live-dot" /> THIS WEEK</span><h2>이번 주도<br />잘 달리고 있어요.</h2><p>달리기와 다른 운동을 함께 기록하며<br className="desktop-break" /> 나에게 맞는 페이스를 찾아보세요.</p><button className="hero-button" onClick={() => onNavigate("records")}>운동 기록하기 <span>↗</span></button></div>
       <div className="hero-art" aria-hidden="true"><div className="sun" /><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="runner"><span className="runner-head" /><span className="runner-body" /><span className="runner-arm" /><span className="runner-leg left" /><span className="runner-leg right" /></div><div className="hill hill-back" /><div className="hill hill-front" /><span className="art-label">MOVE<br />YOUR WAY</span></div>

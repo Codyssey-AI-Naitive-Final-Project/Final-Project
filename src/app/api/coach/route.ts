@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,15 @@ function parseCoachAnswer(value: unknown): CoachAnswer | null {
 }
 
 export async function POST(request: Request) {
+  const supabase = await createClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "계정 저장 설정이 아직 완료되지 않았어요." }, { status: 503 });
+  }
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: "Google 로그인 후 AI 코치를 이용해 주세요." }, { status: 401 });
+  }
+
   const apiKey = process.env.CODYSSEY_API_KEY;
   const baseUrl = process.env.CODYSSEY_BASE_URL?.trim().replace(/\/+$/, "");
   const model = process.env.CODYSSEY_MODEL?.trim();
@@ -71,7 +81,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "AI 코치 서버 설정이 아직 완료되지 않았어요." }, { status: 503 });
   }
 
-  let body: { question?: unknown; activities?: unknown };
+  let body: { question?: unknown; context?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -82,7 +92,46 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "질문을 입력해 주세요. (최대 1,000자)" }, { status: 400 });
   }
 
-  const activities = Array.isArray(body.activities) ? body.activities.slice(0, 20) : [];
+  if (!body.context || typeof body.context !== "object" || Array.isArray(body.context)) {
+    return NextResponse.json({ error: "코칭 정보와 동의 여부를 확인해 주세요." }, { status: 400 });
+  }
+  const rawContext = body.context as Record<string, unknown>;
+  if (rawContext.consent !== true) {
+    return NextResponse.json({ error: "기록과 컨디션 정보를 AI API로 보내는 데 동의해 주세요." }, { status: 400 });
+  }
+
+  const validNullableNumber = (value: unknown, min: number, max: number) =>
+    value === null || (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max);
+  const goal = rawContext.goal === null || (typeof rawContext.goal === "string" && rawContext.goal.length <= 120) ? rawContext.goal : undefined;
+  const experience = rawContext.experience === null || ["초보", "중급", "숙련"].includes(String(rawContext.experience)) ? rawContext.experience : undefined;
+  const painStatus = rawContext.pain_status;
+  const painDetails = rawContext.pain_details;
+  if (
+    goal === undefined || experience === undefined ||
+    !validNullableNumber(rawContext.fatigue, 1, 10) ||
+    !validNullableNumber(rawContext.sleep_hours, 0, 24) ||
+    !validNullableNumber(rawContext.available_minutes, 1, 360) ||
+    !["none", "mild", "pain"].includes(String(painStatus)) ||
+    !(painDetails === null || (typeof painDetails === "string" && painDetails.length <= 200))
+  ) {
+    return NextResponse.json({ error: "코칭 정보의 입력 범위를 확인해 주세요." }, { status: 400 });
+  }
+
+  const [{ data: activityRows, error: activityError }, { data: savedProfile }] = await Promise.all([
+    supabase.from("activity_records").select("activity_type, title, distance_km, duration_minutes, rpe, occurred_at").eq("user_id", user.id).order("occurred_at", { ascending: false }).limit(10),
+    supabase.from("coach_profiles").select("goal, experience").eq("user_id", user.id).maybeSingle(),
+  ]);
+  if (activityError) {
+    return NextResponse.json({ error: "계정 운동 기록을 불러오지 못했어요. Supabase SQL 설정을 확인해 주세요." }, { status: 503 });
+  }
+  const activities = (activityRows ?? []).map((activity) => ({
+    kind: activity.activity_type,
+    title: activity.title,
+    distance_km: activity.distance_km,
+    duration_minutes: activity.duration_minutes,
+    rpe: activity.rpe,
+    occurred_at: activity.occurred_at,
+  }));
   const promptPath = join(process.cwd(), "docs", "ai", "system-prompt.md");
   let systemPrompt: string;
   try {
@@ -94,7 +143,16 @@ export async function POST(request: Request) {
   const input = {
     question: body.question.trim(),
     activities,
-    note: "goal, fatigue, sleep, pain, and available exercise time were not separately collected. Do not assume them. Some activity entries may be demo data; check their source field.",
+    context: {
+      goal: goal ?? savedProfile?.goal ?? null,
+      experience: experience ?? savedProfile?.experience ?? null,
+      fatigue: rawContext.fatigue,
+      sleep_hours: rawContext.sleep_hours,
+      pain_status: painStatus,
+      pain_details: painDetails,
+      available_minutes: rawContext.available_minutes,
+    },
+    note: "Activity records and saved goal/experience were loaded for the authenticated user from their own account. Missing context values are null; do not assume them.",
   };
   const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
 
