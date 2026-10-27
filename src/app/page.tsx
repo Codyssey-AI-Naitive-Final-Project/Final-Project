@@ -168,12 +168,15 @@ export default function Home() {
     setAuthMessage("");
     try {
       const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback` } });
-      if (error) setAuthMessage("Google 로그인을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.");
+      if (error) {
+        authPendingRef.current = false;
+        setAuthPending(false);
+        setAuthMessage("Google 로그인을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.");
+      }
     } catch {
-      setAuthMessage("Google 로그인을 시작하지 못했어요. 네트워크 연결을 확인하고 다시 시도해 주세요.");
-    } finally {
       authPendingRef.current = false;
       setAuthPending(false);
+      setAuthMessage("Google 로그인을 시작하지 못했어요. 네트워크 연결을 확인하고 다시 시도해 주세요.");
     }
   }
 
