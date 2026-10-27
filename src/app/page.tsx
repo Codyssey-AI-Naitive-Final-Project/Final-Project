@@ -3,12 +3,21 @@
 import { type FormEvent, useState } from "react";
 
 type Tab = "home" | "records" | "plan" | "coach";
-type Activity = { id: number; kind: string; title: string; detail: string; date: string; color: string };
+type Activity = { id: number; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user" };
+type CoachAnswer = {
+  summary: string;
+  coaching_message: string;
+  recommended_workout: { type: string; duration_min: number; intensity: { rpe: number | null; description: string }; details: string[] };
+  reason: string[];
+  precautions: string[];
+  safety_level: "normal" | "caution" | "stop_and_check";
+  follow_up_questions: string[];
+};
 
 const initialActivities: Activity[] = [
-  { id: 1, kind: "RUN", title: "회복 러닝", detail: "4.2 km · 31분", date: "오늘 오전 7:12", color: "mint" },
-  { id: 2, kind: "FOOTBALL", title: "풋살", detail: "60분 · 체감 강도 7/10", date: "어제 오후 8:30", color: "orange" },
-  { id: 3, kind: "RUN", title: "천천히 달리기", detail: "6.0 km · 44분", date: "10월 21일", color: "blue" },
+  { id: 1, kind: "RUN", title: "회복 러닝", detail: "4.2 km · 31분 · RPE 3", date: "오늘 오전 7:12", color: "mint", rpe: 3, source: "demo" },
+  { id: 2, kind: "FOOTBALL", title: "풋살", detail: "60분 · RPE 7", date: "어제 오후 8:30", color: "orange", rpe: 7, source: "demo" },
+  { id: 3, kind: "RUN", title: "천천히 달리기", detail: "6.0 km · 44분 · RPE 3", date: "10월 21일", color: "blue", rpe: 3, source: "demo" },
 ];
 
 const navItems: { id: Tab; label: string; icon: string }[] = [
@@ -24,26 +33,50 @@ export default function Home() {
   const [kind, setKind] = useState("러닝");
   const [distance, setDistance] = useState("");
   const [duration, setDuration] = useState("");
+  const [rpe, setRpe] = useState("");
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
+  const [coachAnswer, setCoachAnswer] = useState<CoachAnswer | null>(null);
+  const [coachError, setCoachError] = useState("");
+  const [isAsking, setIsAsking] = useState(false);
 
   function saveActivity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const activityKind: Activity["kind"] = kind === "러닝" ? "RUN" : kind === "축구" ? "FOOTBALL" : "OTHER";
     const title = kind === "러닝" ? "러닝 기록" : kind === "축구" ? "축구 기록" : "운동 기록";
     setActivities((current) => [
-      { id: Date.now(), kind: kind.toUpperCase(), title, detail: kind === "러닝" ? `${distance || "—"} km · ${duration || "—"}분` : `${distance || "—"}분 · 강도 ${duration || "—"}/10`, date: "방금 전", color: kind === "러닝" ? "mint" : "orange" },
+      { id: Date.now(), kind: activityKind, title, detail: kind === "러닝" ? `${distance} km · ${duration}분 · RPE ${rpe}` : `${duration}분 · RPE ${rpe}`, date: "방금 전", color: kind === "러닝" ? "mint" : kind === "축구" ? "orange" : "blue", rpe: Number(rpe), source: "user" },
       ...current,
     ]);
     setDistance("");
     setDuration("");
+    setRpe("");
     setTab("records");
   }
 
-  function askCoach(event: FormEvent<HTMLFormElement>) {
+  async function askCoach(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!question.trim()) return;
-    setAsked(question.trim());
-    setQuestion("");
+    const submittedQuestion = question.trim();
+    if (!submittedQuestion || isAsking) return;
+    setAsked(submittedQuestion);
+    setCoachAnswer(null);
+    setCoachError("");
+    setIsAsking(true);
+    try {
+      const response = await fetch("/api/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: submittedQuestion, activities: activities.slice(0, 10).map(({ kind, title, detail, date, rpe, source }) => ({ kind, title, detail, date, rpe, source })) }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "AI 코치 요청에 실패했어요.");
+      setCoachAnswer(result.answer as CoachAnswer);
+      setQuestion("");
+    } catch (error) {
+      setCoachError(error instanceof Error ? error.message : "AI 코치 요청에 실패했어요.");
+    } finally {
+      setIsAsking(false);
+    }
   }
 
   return (
@@ -71,8 +104,9 @@ export default function Home() {
                 {["러닝", "축구", "기타"].map((item) => <button type="button" key={item} className={`choice ${kind === item ? "selected" : ""}`} onClick={() => setKind(item)}>{item}</button>)}
               </div>
               <div className="input-grid">
-                <label><span>{kind === "러닝" ? "거리 (km)" : "운동 시간 (분)"}</span><input inputMode="decimal" value={distance} onChange={(e) => setDistance(e.target.value)} placeholder={kind === "러닝" ? "예: 5.0" : "예: 60"} /></label>
-                <label><span>{kind === "러닝" ? "운동 시간 (분)" : "체감 강도 (1–10)"}</span><input inputMode="numeric" value={duration} onChange={(e) => setDuration(e.target.value)} placeholder={kind === "러닝" ? "예: 35" : "예: 7"} /></label>
+                {kind === "러닝" && <label><span>거리 (km)</span><input type="number" min="0.1" step="0.1" required value={distance} onChange={(e) => setDistance(e.target.value)} placeholder="예: 5.0" /></label>}
+                <label><span>운동 시간 (분)</span><input type="number" min="1" step="1" required value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="예: 35" /></label>
+                <label><span>체감 강도 (RPE 1–10)</span><input type="number" min="1" max="10" step="1" required value={rpe} onChange={(e) => setRpe(e.target.value)} placeholder="예: 5" /></label>
               </div>
               <button className="primary-button full-button" type="submit">기록 저장 <span>→</span></button>
               <p className="form-note">현재 데모는 브라우저를 새로고침하면 입력 기록이 초기화됩니다.</p>
@@ -86,10 +120,10 @@ export default function Home() {
             <PageHeading eyebrow="YOUR AI COACH" title="오늘은 어떤가요?" description="운동 기록을 바탕으로 코치와 대화해보세요." />
             <div className="coach-card card">
               <div className="coach-orb"><span>✳</span></div>
-              <div className="coach-copy"><span className="demo-badge">AI 코치 · 데모</span><h2>꾸준함이 페이스를 만듭니다.</h2><p>러닝과 풋살 기록을 함께 살펴보고, 오늘 운동의 강도를 조절해보세요.</p></div>
+              <div className="coach-copy"><span className="demo-badge">AI 코치 · 연결됨</span><h2>꾸준함이 페이스를 만듭니다.</h2><p>운동 기록을 참고해 오늘의 코칭을 받아보세요. 화면의 샘플 기록은 예시로 표시됩니다.</p></div>
               <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>이번 주 러닝 2회와 풋살 1회가 기록되어 있어요. 다음 운동은 컨디션을 먼저 확인하고 정해보세요.</p></div>
-              {asked && <div className="chat-reply"><span className="user-question">{asked}</span><p>기록이 쌓이면 최근 운동량과 휴식 흐름을 함께 보고 더 알맞은 제안을 드릴게요. 지금 화면은 연결 전 데모 답변입니다.</p></div>}
-              <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" /><button type="submit" aria-label="질문 보내기">↑</button></form>
+              {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록을 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}</div>}
+              <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" maxLength={1000} disabled={isAsking} /><button type="submit" aria-label="질문 보내기" disabled={isAsking || !question.trim()}>{isAsking ? "…" : "↑"}</button></form>
               <p className="form-note">운동 조언은 참고용이며, 통증이나 건강 문제가 있으면 전문가와 상담하세요.</p>
             </div>
           </section>
@@ -101,6 +135,18 @@ export default function Home() {
       </nav>
     </main>
   );
+}
+
+function CoachResponse({ answer }: { answer: CoachAnswer }) {
+  const { recommended_workout: workout } = answer;
+  return <article className={`coach-answer safety-${answer.safety_level}`}>
+    <strong>{answer.summary}</strong>
+    <p>{answer.coaching_message}</p>
+    <div className="answer-workout"><b>{workout.type}</b><span>{workout.duration_min}분 · {workout.intensity.rpe === null ? "강도 안내 없음" : `RPE ${workout.intensity.rpe}`} · {workout.intensity.description}</span>{workout.details.length > 0 && <ul>{workout.details.map((item, index) => <li key={`detail-${index}`}>{item}</li>)}</ul>}</div>
+    {answer.reason.length > 0 && <div><b>추천 이유</b><ul>{answer.reason.map((item, index) => <li key={`reason-${index}`}>{item}</li>)}</ul></div>}
+    {answer.precautions.length > 0 && <div><b>주의사항</b><ul>{answer.precautions.map((item, index) => <li key={`precaution-${index}`}>{item}</li>)}</ul></div>}
+    {answer.follow_up_questions.length > 0 && <div><b>더 알려주면 좋은 점</b><ul>{answer.follow_up_questions.map((item, index) => <li key={`question-${index}`}>{item}</li>)}</ul></div>}
+  </article>;
 }
 
 function PageHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
