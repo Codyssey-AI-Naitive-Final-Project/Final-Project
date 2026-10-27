@@ -61,6 +61,8 @@ export default function Home() {
   const [authPending, setAuthPending] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState("");
   const authPendingRef = useRef(false);
   const supabase = createClient();
 
@@ -190,10 +192,23 @@ export default function Home() {
   }
 
   async function saveCoachProfile() {
-    if (!supabase || !supabaseUser) return;
-    const { error } = await supabase.from("coach_profiles").upsert({ user_id: supabaseUser.id, goal: coachContext.goal || null, experience: coachContext.experience || null, updated_at: new Date().toISOString() });
-    if (error) setStorageError("코치 목표 설정을 계정에 저장하지 못했어요.");
-    else { setProfileSaved(true); setStorageError(""); }
+    if (!supabase || !supabaseUser) {
+      setProfileMessage("저장하려면 먼저 Google 로그인이 필요해요.");
+      return;
+    }
+    setProfileSaving(true);
+    setProfileMessage("");
+    try {
+      const { error } = await supabase.from("coach_profiles").upsert({ user_id: supabaseUser.id, goal: coachContext.goal || null, experience: coachContext.experience || null, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      setProfileSaved(true);
+      setProfileMessage("목표와 운동 경험을 계정에 저장했어요.");
+    } catch {
+      setProfileSaved(false);
+      setProfileMessage("저장하지 못했어요. 연결 상태를 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setProfileSaving(false);
+    }
   }
 
   async function importLocalActivities() {
@@ -349,8 +364,8 @@ export default function Home() {
               <div className="coach-context">
                 <div className="context-heading"><div><span className="insight-label">PERSONAL CONTEXT</span><h3>오늘의 컨디션</h3></div><span className="context-optional">선택 입력</span></div>
                 <div className="input-grid context-grid">
-                  <label><span>운동 목표</span><select value={coachContext.goal} onChange={(e) => setCoachContext((current) => ({ ...current, goal: e.target.value }))}><option value="">선택 안 함</option>{coachContext.goal === "5km 완주" && <option value="5km 완주">5km 완주 (기존 설정)</option>}<option value="체력 향상">체력 향상</option><option value="러닝 거리 늘리기">러닝 거리 늘리기</option><option value="꾸준히 운동하기">꾸준히 운동하기</option><option value="체중 감량">체중 감량</option><option value="근력 향상">근력 향상</option><option value="기타">기타</option></select></label>
-                  <label><span>운동 경험</span><select value={coachContext.experience} onChange={(e) => setCoachContext((current) => ({ ...current, experience: e.target.value }))}><option value="">선택 안 함</option><option value="초보">초보</option><option value="중급">중급</option><option value="숙련">숙련</option></select></label>
+                  <label><span>운동 목표</span><select value={coachContext.goal} onChange={(e) => { setCoachContext((current) => ({ ...current, goal: e.target.value })); setProfileSaved(false); setProfileMessage(""); }}><option value="">선택 안 함</option>{coachContext.goal === "5km 완주" && <option value="5km 완주">5km 완주 (기존 설정)</option>}<option value="체력 향상">체력 향상</option><option value="러닝 거리 늘리기">러닝 거리 늘리기</option><option value="꾸준히 운동하기">꾸준히 운동하기</option><option value="체중 감량">체중 감량</option><option value="근력 향상">근력 향상</option><option value="기타">기타</option></select></label>
+                  <label><span>운동 경험</span><select value={coachContext.experience} onChange={(e) => { setCoachContext((current) => ({ ...current, experience: e.target.value })); setProfileSaved(false); setProfileMessage(""); }}><option value="">선택 안 함</option><option value="초보">초보</option><option value="중급">중급</option><option value="숙련">숙련</option></select></label>
                   <label><span>피로도 (1~10)</span><input type="number" min="1" max="10" step="1" value={coachContext.fatigue} onChange={(e) => setCoachContext((current) => ({ ...current, fatigue: e.target.value }))} placeholder="예: 4" /></label>
                   <label><span>최근 수면 (시간)</span><input type="number" min="0" max="24" step="0.5" value={coachContext.sleepHours} onChange={(e) => setCoachContext((current) => ({ ...current, sleepHours: e.target.value }))} placeholder="예: 7.5" /></label>
                   <label><span>오늘 운동 가능 시간 (분)</span><input type="number" min="1" max="360" step="1" value={coachContext.availableMinutes} onChange={(e) => setCoachContext((current) => ({ ...current, availableMinutes: e.target.value }))} placeholder="예: 30" /></label>
@@ -359,7 +374,8 @@ export default function Home() {
                 {coachContext.painStatus !== "none" && <label className="context-pain-details"><span>불편한 부위나 상황 (선택)</span><input maxLength={200} value={coachContext.painDetails} onChange={(e) => setCoachContext((current) => ({ ...current, painDetails: e.target.value }))} placeholder="진단명이 아닌 느끼는 증상만 적어주세요." /></label>}
                 <label className="data-consent"><input type="checkbox" checked={hasDataConsent} onChange={(e) => setHasDataConsent(e.target.checked)} /><span>계정에 저장된 운동 기록·목표·운동 경험과 위에 입력한 컨디션 정보를 Codyssey AI API로 보내 코칭 답변을 만드는 데 동의합니다.</span></label>
                 <p className="form-note">컨디션 정보는 현재 앱 DB에 저장하지 않고 요청에만 포함합니다. 이름·연락처 등 식별 정보는 입력하지 마세요.</p>
-                {supabaseUser && <div className="profile-save-row"><button className="text-button" type="button" onClick={saveCoachProfile}>목표·운동 경험을 계정에 저장</button><span>{profileSaved ? "계정에 저장됨" : "선택 저장"}</span></div>}
+                {supabaseUser && <div className="profile-save-row"><button className="text-button" type="button" onClick={saveCoachProfile} disabled={profileSaving}>{profileSaving ? "저장 중…" : "목표·운동 경험을 계정에 저장"}</button><span>{profileSaved ? "계정에 저장됨" : "저장 전"}</span></div>}
+                {profileMessage && <p className={`form-note ${profileSaved ? "" : "form-error"}`} role={profileSaved ? "status" : "alert"}>{profileMessage}</p>}
               </div>
               <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>{activities.some((activity) => activity.source === "user") ? `직접 입력한 운동 ${activities.filter((activity) => activity.source === "user").length}건과 최근 기록을 함께 보냅니다.` : "아직 직접 입력한 기록이 없어요. 예시 기록은 데모 데이터로 표시됩니다."}</p></div>
               {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록을 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}</div>}
