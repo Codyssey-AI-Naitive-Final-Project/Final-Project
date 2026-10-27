@@ -118,7 +118,15 @@ export async function POST(request: Request) {
       cache: "no-store",
       signal: AbortSignal.timeout(45000),
     });
-  } catch {
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause as { code?: unknown } | undefined : undefined;
+    console.error("Codyssey API transport failure", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      code: typeof cause?.code === "string" ? cause.code : undefined,
+      message: error instanceof Error
+        ? error.message.replaceAll(apiKey, "[redacted]").replaceAll(baseUrl, "[base-url]")
+        : "Unknown transport error",
+    });
     return NextResponse.json({ error: "AI 코치 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요." }, { status: 502 });
   }
 
