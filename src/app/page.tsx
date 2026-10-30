@@ -1,11 +1,13 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 
 type Tab = "home" | "records" | "plan" | "coach";
 type Activity = { id: number | string; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user"; distanceKm?: number | null; durationMinutes?: number; occurredAt?: string };
+type PlanKind = "RUN" | "FOOTBALL" | "STRENGTH" | "OTHER";
+type WorkoutPlan = { id: string; activity_type: PlanKind; title: string; planned_date: string; duration_minutes: number; distance_km: number | null; note: string | null };
 type CoachContext = {
   goal: string;
   experience: string;
@@ -354,7 +356,7 @@ export default function Home() {
             {!supabaseUser && <ActivityList activities={initialActivities} title="예시 기록 · 데모" />}
           </section>
         )}
-        {tab === "plan" && <PlanView activities={activities.filter((activity) => activity.source === "user")} />}
+        {tab === "plan" && <PlanView activities={activities.filter((activity) => activity.source === "user")} userId={supabaseUser?.id ?? null} />}
         {tab === "coach" && (
           <section className="page-section coach-page">
             <PageHeading eyebrow="YOUR AI COACH" title="오늘은 어떤가요?" description="운동 기록을 바탕으로 코치와 대화해보세요." />
@@ -469,10 +471,20 @@ function localDateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function PlanView({ activities }: { activities: Activity[] }) {
+function PlanView({ activities, userId }: { activities: Activity[]; userId: string | null }) {
   const today = new Date();
   const [weekStart, setWeekStart] = useState(() => startOfLocalWeek(today));
   const [selectedDate, setSelectedDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+  const [plans, setPlans] = useState<WorkoutPlan[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [planSaving, setPlanSaving] = useState(false);
+  const [planMessage, setPlanMessage] = useState("");
+  const [planKind, setPlanKind] = useState<PlanKind>("RUN");
+  const [planTitle, setPlanTitle] = useState("");
+  const [planDuration, setPlanDuration] = useState("");
+  const [planDistance, setPlanDistance] = useState("");
+  const [planNote, setPlanNote] = useState("");
+  const supabase = useMemo(() => createClient(), []);
   const weekDates = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(weekStart);
     date.setDate(weekStart.getDate() + index);
@@ -484,6 +496,31 @@ function PlanView({ activities }: { activities: Activity[] }) {
     : `${weekStart.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })} — ${weekEnd.toLocaleDateString("ko-KR", { month: "long", day: "numeric" })}`;
   const selectedKey = localDateKey(selectedDate);
   const selectedActivities = activities.filter((activity) => activity.occurredAt && localDateKey(new Date(activity.occurredAt)) === selectedKey);
+  const selectedPlans = plans.filter((plan) => plan.planned_date === selectedKey);
+  const canPlanSelectedDate = selectedKey >= localDateKey(today);
+
+  useEffect(() => {
+    if (!userId || !supabase) {
+      setPlans([]);
+      setPlansLoading(false);
+      return;
+    }
+    let active = true;
+    setPlansLoading(true);
+    supabase.from("workout_plans").select("id, activity_type, title, planned_date, duration_minutes, distance_km, note").eq("user_id", userId).order("planned_date", { ascending: true }).limit(200)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setPlanMessage("운동 계획을 불러오지 못했어요. Supabase 계획 테이블 설정을 확인해 주세요.");
+          setPlans([]);
+        } else {
+          setPlans((data ?? []) as WorkoutPlan[]);
+          setPlanMessage("");
+        }
+        setPlansLoading(false);
+      });
+    return () => { active = false; };
+  }, [supabase, userId]);
 
   function moveWeek(amount: number) {
     const nextWeekStart = new Date(weekStart);
@@ -500,11 +537,55 @@ function PlanView({ activities }: { activities: Activity[] }) {
     setSelectedDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate()));
   }
 
+  async function savePlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!userId || !supabase) {
+      setPlanMessage("계정에 계획을 저장하려면 Google 로그인이 필요해요.");
+      return;
+    }
+    if (!canPlanSelectedDate) {
+      setPlanMessage("지난 날짜에는 운동 계획을 추가할 수 없어요.");
+      return;
+    }
+    setPlanSaving(true);
+    setPlanMessage("");
+    const kindLabels: Record<PlanKind, string> = { RUN: "러닝", FOOTBALL: "축구", STRENGTH: "헬스·근력", OTHER: "기타 운동" };
+    const title = planTitle.trim() || `${kindLabels[planKind]} 계획`;
+    const { data, error } = await supabase.from("workout_plans").insert({
+      user_id: userId,
+      activity_type: planKind,
+      title,
+      planned_date: selectedKey,
+      duration_minutes: Number(planDuration),
+      distance_km: planKind === "RUN" && planDistance ? Number(planDistance) : null,
+      note: planNote.trim() || null,
+    }).select("id, activity_type, title, planned_date, duration_minutes, distance_km, note").single();
+    if (error) {
+      setPlanMessage("계획을 저장하지 못했어요. Supabase 마이그레이션이 적용됐는지 확인해 주세요.");
+    } else {
+      setPlans((current) => [...current, data as WorkoutPlan].sort((a, b) => a.planned_date.localeCompare(b.planned_date)));
+      setPlanTitle("");
+      setPlanDuration("");
+      setPlanDistance("");
+      setPlanNote("");
+      setPlanMessage("선택한 날짜에 운동 계획을 저장했어요.");
+    }
+    setPlanSaving(false);
+  }
+
+  async function deletePlan(planId: string) {
+    if (!userId || !supabase || !window.confirm("이 운동 계획을 삭제할까요?")) return;
+    setPlanMessage("");
+    const { error } = await supabase.from("workout_plans").delete().eq("id", planId).eq("user_id", userId);
+    if (error) setPlanMessage("계획을 삭제하지 못했어요. 잠시 후 다시 시도해 주세요.");
+    else setPlans((current) => current.filter((plan) => plan.id !== planId));
+  }
+
   return <section className="page-section">
-    <PageHeading eyebrow="YOUR WEEKLY RHYTHM" title="운동 일정" description="주간 이동과 날짜 선택으로 실제 운동 기록을 확인해요." />
+    <PageHeading eyebrow="YOUR WEEKLY RHYTHM" title="운동 일정" description="날짜별 운동 계획과 실제 기록을 함께 확인해요." />
     <div className="week-card card">
       <div className="week-head">
-        <div><p className="eyebrow">{rangeText}</p><h2>주간 운동 기록</h2></div>
+        <div><p className="eyebrow">{rangeText}</p><h2>주간 운동 일정</h2></div>
         <div className="week-controls">
           <button className="round-arrow" type="button" aria-label="이전 주" onClick={() => moveWeek(-1)}>←</button>
           <button className="today-button" type="button" onClick={goToToday}>오늘</button>
@@ -515,21 +596,44 @@ function PlanView({ activities }: { activities: Activity[] }) {
         {weekDates.map((date) => {
           const dateKey = localDateKey(date);
           const dayActivities = activities.filter((activity) => activity.occurredAt && localDateKey(new Date(activity.occurredAt)) === dateKey);
+          const dayPlans = plans.filter((plan) => plan.planned_date === dateKey);
           const isToday = dateKey === localDateKey(today);
           const isSelected = dateKey === selectedKey;
-          const dotType = dayActivities.some((activity) => activity.kind === "RUN") ? "run" : dayActivities.some((activity) => activity.kind === "FOOTBALL") ? "cross" : dayActivities.length ? "strength" : isToday ? "today" : "rest";
+          const dotType = dayActivities.some((activity) => activity.kind === "RUN") ? "run" : dayActivities.some((activity) => activity.kind === "FOOTBALL") ? "cross" : dayActivities.length ? "strength" : dayPlans.length ? "plan" : isToday ? "today" : "rest";
           return <button className={`day-column ${isToday ? "is-today" : ""} ${isSelected ? "is-selected" : ""}`} type="button" key={dateKey} aria-pressed={isSelected} onClick={() => setSelectedDate(date)}>
             <span>{date.toLocaleDateString("ko-KR", { weekday: "short" })}</span>
             <b>{date.getDate()}</b>
             <i className={`day-dot ${dotType}`} />
-            <small>{dayActivities.length ? `${dayActivities.length}회 기록` : isToday ? "오늘" : "기록 없음"}</small>
+            <small>{dayActivities.length && dayPlans.length ? `${dayActivities.length}회 · 계획 ${dayPlans.length}` : dayActivities.length ? `${dayActivities.length}회 기록` : dayPlans.length ? `계획 ${dayPlans.length}개` : isToday ? "오늘" : "기록 없음"}</small>
           </button>;
         })}
       </div>
     </div>
     <div className="selected-day-heading"><h2>{selectedDate.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</h2></div>
     <ActivityList activities={selectedActivities} title="이 날짜의 운동 기록" emptyMessage="이 날짜에 저장된 운동 기록이 없어요." />
-    <div className="section-title-row"><div><p className="eyebrow">PLAN NOTE</p><h2>운동 계획</h2></div></div>
-    <div className="plan-note card"><span className="small-icon lilac-bg">✳</span><div><h3>운동 계획 저장은 다음 단계예요.</h3><p>현재 일정 화면은 실제 기록을 날짜별로 확인합니다. 반복 일정이나 추천 운동을 저장하고 재조정하는 기능은 아직 연결되지 않았어요.</p></div></div>
+    <div className="section-title-row plan-section-title"><div><p className="eyebrow">TRAINING PLAN</p><h2>이 날짜의 운동 계획</h2></div></div>
+    <div className="plan-list card">
+      {plansLoading ? <p className="form-note">계획을 불러오고 있어요…</p> : selectedPlans.length === 0 ? <p className="form-note">이 날짜에 저장된 계획이 없어요.</p> : selectedPlans.map((plan) => {
+        const typeLabels: Record<PlanKind, string> = { RUN: "러닝", FOOTBALL: "축구", STRENGTH: "헬스·근력", OTHER: "기타 운동" };
+        return <article className="plan-row" key={plan.id}>
+          <span className="small-icon lilac-bg">✳</span>
+          <div className="plan-row-copy"><span className="plan-badge">예정</span><h3>{plan.title}</h3><p>{typeLabels[plan.activity_type]} · {plan.duration_minutes}분{plan.distance_km ? ` · ${plan.distance_km}km` : ""}{plan.note ? ` · ${plan.note}` : ""}</p></div>
+          <button className="text-button plan-delete" type="button" onClick={() => void deletePlan(plan.id)}>삭제</button>
+        </article>;
+      })}
+    </div>
+    {userId ? canPlanSelectedDate ? <form className="plan-form card" onSubmit={savePlan}>
+      <div className="form-title"><span className="small-icon lilac-bg">＋</span><div><h2>선택한 날짜에 계획 추가</h2><p>계획은 내 계정에 저장되어 다른 기기에서도 확인할 수 있어요.</p></div></div>
+      <div className="plan-fields">
+        <label><span>운동 종류</span><select value={planKind} onChange={(event) => setPlanKind(event.target.value as PlanKind)}><option value="RUN">러닝</option><option value="FOOTBALL">축구</option><option value="STRENGTH">헬스·근력</option><option value="OTHER">기타 운동</option></select></label>
+        <label><span>계획 이름 (선택)</span><input value={planTitle} onChange={(event) => setPlanTitle(event.target.value)} maxLength={100} placeholder="예: 하체 운동" /></label>
+        <label><span>예상 운동 시간 (분)</span><input type="number" min="1" max="1440" required value={planDuration} onChange={(event) => setPlanDuration(event.target.value)} placeholder="예: 45" /></label>
+        {planKind === "RUN" && <label><span>목표 거리 (km, 선택)</span><input type="number" min="0.1" max="1000" step="0.1" value={planDistance} onChange={(event) => setPlanDistance(event.target.value)} placeholder="예: 5" /></label>}
+      </div>
+      <label className="plan-note-field"><span>메모 (선택)</span><input value={planNote} onChange={(event) => setPlanNote(event.target.value)} maxLength={250} placeholder="예: 가볍게 회복 러닝" /></label>
+      <button className="primary-button full-button" type="submit" disabled={planSaving}>{planSaving ? "저장 중…" : "운동 계획 저장"}<span>→</span></button>
+      {planMessage && <p className={`form-note ${planMessage.includes("저장했어요") ? "" : "form-error"}`} role={planMessage.includes("저장했어요") ? "status" : "alert"}>{planMessage}</p>}
+    </form> : <div className="plan-note card"><span className="small-icon lilac-bg">✳</span><div><h3>지난 날짜에는 계획을 추가할 수 없어요.</h3><p>오늘 또는 미래 날짜를 선택해 운동 계획을 저장해 보세요.</p></div></div> : <div className="plan-note card"><span className="small-icon lilac-bg">✳</span><div><h3>로그인 후 운동 계획을 저장할 수 있어요.</h3><p>로그인하면 계획을 계정에 저장하고 다른 기기에서도 확인할 수 있습니다.</p></div></div>}
+    {planMessage && !userId && <p className="form-note form-error" role="alert">{planMessage}</p>}
   </section>;
 }

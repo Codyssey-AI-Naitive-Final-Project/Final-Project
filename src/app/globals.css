@@ -36,3 +36,21 @@
 .profile-save-row{display:flex;align-items:center;justify-content:space-between;margin-top:9px}
 .profile-save-row>span{color:#899386;font-size:9px}
 @media(max-width:760px){.top-actions{gap:7px}.account-button{padding:8px;font-size:9px}.account-email{max-width:85px;font-size:8px}.auth-message{margin:0 18px}}
+.plan-section-title{margin-top:28px}
+.plan-list{max-width:720px;padding:8px 16px}
+.plan-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #f0f1ed}
+.plan-row:last-child{border-bottom:0}
+.plan-row-copy{flex:1;min-width:0}
+.plan-row-copy h3{font-size:11px;margin:4px 0}
+.plan-row-copy p{font-size:9px;line-height:1.5;color:#828980;margin:0;overflow-wrap:anywhere}
+.plan-badge{font-size:8px;color:#7162a5;background:#f0ecfc;border-radius:20px;padding:3px 7px}
+.plan-delete{color:#a13d2d;flex:none}
+.plan-form{max-width:720px;margin-top:14px;padding:20px}
+.plan-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.plan-fields label>span,.plan-note-field>span{display:block;color:#727a71;font-size:10px;font-weight:600;margin-bottom:8px}
+.plan-fields input,.plan-fields select,.plan-note-field input{width:100%;min-height:40px;border:1px solid #e7eae3;border-radius:9px;padding:10px 12px;background:#fcfcfa;color:#303a32;font-size:11px;outline:none}
+.plan-fields input:focus,.plan-fields select:focus,.plan-note-field input:focus{border-color:#afca81}
+.plan-note-field{display:block;margin-top:12px}
+.plan-form .full-button:disabled{opacity:.65;cursor:wait}
+.day-dot.plan{background:#a99bd6}
+@media(max-width:520px){.plan-form{padding:16px}.plan-fields{grid-template-columns:1fr}.plan-row{gap:9px}.plan-list{padding:6px 12px}}
