@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
+import { searchFitnessKnowledge } from "@/lib/coach/fitness-knowledge";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -8,6 +9,7 @@ export const runtime = "nodejs";
 type CoachAnswer = {
   summary: string;
   coaching_message: string;
+  nutrition_guidance: string[];
   recommended_workout: {
     type: string;
     duration_min: number;
@@ -43,6 +45,8 @@ function parseCoachAnswer(value: unknown): CoachAnswer | null {
   if (
     typeof answer.summary !== "string" ||
     typeof answer.coaching_message !== "string" ||
+    !isStringArray(answer.nutrition_guidance) ||
+    answer.nutrition_guidance.length > 3 ||
     !workout ||
     typeof workout.type !== "string" ||
     typeof workout.duration_min !== "number" ||
@@ -103,11 +107,14 @@ export async function POST(request: Request) {
   const validNullableNumber = (value: unknown, min: number, max: number) =>
     value === null || (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max);
   const goal = rawContext.goal === null || (typeof rawContext.goal === "string" && rawContext.goal.length <= 120) ? rawContext.goal : undefined;
+  const ageGroup = rawContext.age_group;
   const experience = rawContext.experience === null || ["초보", "중급", "숙련"].includes(String(rawContext.experience)) ? rawContext.experience : undefined;
   const painStatus = rawContext.pain_status;
   const painDetails = rawContext.pain_details;
   if (
-    goal === undefined || experience === undefined ||
+    goal === undefined ||
+    !(ageGroup === null || ["20대 이하", "30대", "40대", "50대", "60대 이상"].includes(String(ageGroup))) ||
+    experience === undefined ||
     !validNullableNumber(rawContext.fatigue, 1, 10) ||
     !validNullableNumber(rawContext.sleep_hours, 0, 24) ||
     !validNullableNumber(rawContext.available_minutes, 1, 360) ||
@@ -117,21 +124,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "코칭 정보의 입력 범위를 확인해 주세요." }, { status: 400 });
   }
 
-  const [{ data: activityRows, error: activityError }, { data: savedProfile }] = await Promise.all([
-    supabase.from("activity_records").select("activity_type, title, distance_km, duration_minutes, rpe, occurred_at").eq("user_id", user.id).order("occurred_at", { ascending: false }).limit(10),
-    supabase.from("coach_profiles").select("goal, experience").eq("user_id", user.id).maybeSingle(),
-  ]);
-  if (activityError) {
-    return NextResponse.json({ error: "계정 운동 기록을 불러오지 못했어요. Supabase SQL 설정을 확인해 주세요." }, { status: 503 });
-  }
-  const activities = (activityRows ?? []).map((activity) => ({
-    kind: activity.activity_type,
-    title: activity.title,
-    distance_km: activity.distance_km,
-    duration_minutes: activity.duration_minutes,
-    rpe: activity.rpe,
-    occurred_at: activity.occurred_at,
-  }));
+  const { data: savedProfile } = await supabase.from("coach_profiles").select("goal, experience").eq("user_id", user.id).maybeSingle();
+  const retrievedKnowledge = searchFitnessKnowledge(body.question.trim());
   const promptPath = join(process.cwd(), "docs", "ai", "system-prompt.md");
   let systemPrompt: string;
   try {
@@ -142,9 +136,9 @@ export async function POST(request: Request) {
 
   const input = {
     question: body.question.trim(),
-    activities,
     context: {
       goal: goal ?? savedProfile?.goal ?? null,
+      age_group: ageGroup,
       experience: experience ?? savedProfile?.experience ?? null,
       fatigue: rawContext.fatigue,
       sleep_hours: rawContext.sleep_hours,
@@ -152,30 +146,107 @@ export async function POST(request: Request) {
       pain_details: painDetails,
       available_minutes: rawContext.available_minutes,
     },
-    note: "Activity records and saved goal/experience were loaded for the authenticated user from their own account. Missing context values are null; do not assume them.",
+    reference_material: retrievedKnowledge.chunks.map(({ id, title, publisher, content }) => ({ id, title, publisher, content })),
+    note: "Saved goal and experience belong to the authenticated user. Recent workout records are not included; call get_recent_activities when they are needed. Missing context values are null; do not assume them.",
   };
   const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+  const tools = [{
+    type: "function",
+    function: {
+      name: "get_recent_activities",
+      description: "Retrieve the authenticated user's 10 most recent workout records when their history is relevant to the coaching question.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  }];
+  const messages: Record<string, unknown>[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: `다음 JSON 입력을 바탕으로 코칭해 주세요. JSON 이외의 텍스트는 출력하지 마세요.\n${JSON.stringify(input)}` },
+  ];
 
-  let upstream: Response;
+  type Completion = {
+    choices?: {
+      finish_reason?: string;
+      message?: {
+        content?: unknown;
+        tool_calls?: { id?: string; type?: string; function?: { name?: string; arguments?: string } }[];
+      };
+    }[];
+  };
+  let completion: Completion | null = null;
+  let usedRecentActivities = false;
   try {
-    upstream = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `다음 JSON 입력을 바탕으로 코칭해 주세요. JSON 이외의 텍스트는 출력하지 마세요.\n${JSON.stringify(input)}` },
-        ],
-        max_tokens: 1200,
-        temperature: 0.2,
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(45000),
-    });
+    for (let turn = 0; turn < 2; turn += 1) {
+      const upstream = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          ...(turn === 0 ? { tools, tool_choice: "auto" } : {}),
+          max_tokens: 1200,
+          temperature: 0.2,
+        }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(45000),
+      });
+
+      if (!upstream.ok) {
+        const status = upstream.status === 401 || upstream.status === 403 ? 503 : upstream.status === 429 ? 429 : 502;
+        return NextResponse.json({ error: status === 429 ? "요청이 잠시 몰렸어요. 조금 뒤 다시 시도해 주세요." : "AI 응답을 가져오지 못했어요. 잠시 후 다시 시도해 주세요." }, { status });
+      }
+
+      try {
+        completion = await upstream.json();
+      } catch {
+        return NextResponse.json({ error: "AI 응답을 읽지 못했어요." }, { status: 502 });
+      }
+
+      const toolCalls = completion?.choices?.[0]?.message?.tool_calls ?? [];
+      if (toolCalls.length === 0) break;
+      if (turn !== 0 || toolCalls.length !== 1) {
+        return NextResponse.json({ error: "AI 도구 요청 형식이 올바르지 않아요." }, { status: 502 });
+      }
+
+      const toolCall = toolCalls[0];
+      if (toolCall.type !== "function" || toolCall.function?.name !== "get_recent_activities" || !toolCall.id) {
+        return NextResponse.json({ error: "지원하지 않는 AI 도구 요청이에요." }, { status: 502 });
+      }
+
+      let toolArguments: unknown;
+      try {
+        toolArguments = JSON.parse(toolCall.function.arguments ?? "");
+      } catch {
+        return NextResponse.json({ error: "AI 도구 입력 형식이 올바르지 않아요." }, { status: 502 });
+      }
+      if (!toolArguments || typeof toolArguments !== "object" || Array.isArray(toolArguments) || Object.keys(toolArguments).length > 0) {
+        return NextResponse.json({ error: "AI 도구 입력값이 올바르지 않아요." }, { status: 502 });
+      }
+
+      const { data: activityRows, error: activityError } = await supabase
+        .from("activity_records")
+        .select("activity_type, title, distance_km, duration_minutes, rpe, occurred_at")
+        .eq("user_id", user.id)
+        .order("occurred_at", { ascending: false })
+        .limit(10);
+      if (activityError) {
+        return NextResponse.json({ error: "계정 운동 기록을 불러오지 못했어요. Supabase SQL 설정을 확인해 주세요." }, { status: 503 });
+      }
+      usedRecentActivities = true;
+
+      const activities = (activityRows ?? []).map((activity) => ({
+        kind: activity.activity_type,
+        title: activity.title,
+        distance_km: activity.distance_km,
+        duration_minutes: activity.duration_minutes,
+        rpe: activity.rpe,
+        occurred_at: activity.occurred_at,
+      }));
+      messages.push({ role: "assistant", content: completion?.choices?.[0]?.message?.content ?? null, tool_calls: toolCalls });
+      messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify({ activities }) });
+    }
   } catch (error) {
     const cause = error instanceof Error ? error.cause as { code?: unknown } | undefined : undefined;
     console.error("Codyssey API transport failure", {
@@ -188,22 +259,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "AI 코치 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요." }, { status: 502 });
   }
 
-  if (!upstream.ok) {
-    const status = upstream.status === 401 || upstream.status === 403 ? 503 : upstream.status === 429 ? 429 : 502;
-    return NextResponse.json({ error: status === 429 ? "요청이 잠시 몰렸어요. 조금 뒤 다시 시도해 주세요." : "AI 응답을 가져오지 못했어요. 잠시 후 다시 시도해 주세요." }, { status });
-  }
-
-  let completion: { choices?: { message?: { content?: unknown } }[] };
-  try {
-    completion = await upstream.json();
-  } catch {
-    return NextResponse.json({ error: "AI 응답을 읽지 못했어요." }, { status: 502 });
-  }
-
-  const answer = parseCoachAnswer(completion.choices?.[0]?.message?.content);
+  const answer = parseCoachAnswer(completion?.choices?.[0]?.message?.content);
   if (!answer) {
     return NextResponse.json({ error: "AI 응답 형식이 올바르지 않아요. 다시 요청해 주세요." }, { status: 502 });
   }
 
-  return NextResponse.json({ answer });
+  return NextResponse.json({ answer, used_recent_activities: usedRecentActivities, knowledge_sources: retrievedKnowledge.sources });
 }

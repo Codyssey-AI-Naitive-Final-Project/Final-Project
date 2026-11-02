@@ -8,8 +8,10 @@ type Tab = "home" | "records" | "plan" | "coach";
 type Activity = { id: number | string; kind: "RUN" | "FOOTBALL" | "OTHER"; title: string; detail: string; date: string; color: string; rpe: number; source: "demo" | "user"; distanceKm?: number | null; durationMinutes?: number; occurredAt?: string };
 type PlanKind = "RUN" | "FOOTBALL" | "STRENGTH" | "OTHER";
 type WorkoutPlan = { id: string; activity_type: PlanKind; title: string; planned_date: string; duration_minutes: number; distance_km: number | null; note: string | null };
+type KnowledgeSource = { title: string; publisher: string; url: string };
 type CoachContext = {
   goal: string;
+  ageGroup: string;
   experience: string;
   fatigue: string;
   sleepHours: string;
@@ -20,6 +22,7 @@ type CoachContext = {
 type CoachAnswer = {
   summary: string;
   coaching_message: string;
+  nutrition_guidance: string[];
   recommended_workout: { type: string; duration_min: number; intensity: { rpe: number | null; description: string }; details: string[] };
   reason: string[];
   precautions: string[];
@@ -53,10 +56,12 @@ export default function Home() {
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
   const [coachAnswer, setCoachAnswer] = useState<CoachAnswer | null>(null);
+  const [usedRecentActivities, setUsedRecentActivities] = useState(false);
+  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>([]);
   const [coachError, setCoachError] = useState("");
   const [isAsking, setIsAsking] = useState(false);
   const [hasDataConsent, setHasDataConsent] = useState(false);
-  const [coachContext, setCoachContext] = useState<CoachContext>({ goal: "", experience: "", fatigue: "", sleepHours: "", painStatus: "none", painDetails: "", availableMinutes: "" });
+  const [coachContext, setCoachContext] = useState<CoachContext>({ goal: "", ageGroup: "", experience: "", fatigue: "", sleepHours: "", painStatus: "none", painDetails: "", availableMinutes: "" });
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
@@ -285,6 +290,8 @@ export default function Home() {
     }
     setAsked(submittedQuestion);
     setCoachAnswer(null);
+    setUsedRecentActivities(false);
+    setKnowledgeSources([]);
     setCoachError("");
     setIsAsking(true);
     try {
@@ -295,6 +302,7 @@ export default function Home() {
           question: submittedQuestion,
           context: {
             goal: coachContext.goal || null,
+            age_group: coachContext.ageGroup || null,
             experience: coachContext.experience || null,
             fatigue: coachContext.fatigue ? Number(coachContext.fatigue) : null,
             sleep_hours: coachContext.sleepHours ? Number(coachContext.sleepHours) : null,
@@ -308,6 +316,8 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : "AI 코치 요청에 실패했어요.");
       setCoachAnswer(result.answer as CoachAnswer);
+      setUsedRecentActivities(result.used_recent_activities === true);
+      setKnowledgeSources(Array.isArray(result.knowledge_sources) ? result.knowledge_sources as KnowledgeSource[] : []);
       setQuestion("");
     } catch (error) {
       setCoachError(error instanceof Error ? error.message : "AI 코치 요청에 실패했어요.");
@@ -367,6 +377,7 @@ export default function Home() {
                 <div className="context-heading"><div><span className="insight-label">PERSONAL CONTEXT</span><h3>오늘의 컨디션</h3></div><span className="context-optional">선택 입력</span></div>
                 <div className="input-grid context-grid">
                   <label><span>운동 목표</span><select value={coachContext.goal} onChange={(e) => { setCoachContext((current) => ({ ...current, goal: e.target.value })); setProfileSaved(false); setProfileMessage(""); }}><option value="">선택 안 함</option>{coachContext.goal === "5km 완주" && <option value="5km 완주">5km 완주 (기존 설정)</option>}<option value="체력 향상">체력 향상</option><option value="러닝 거리 늘리기">러닝 거리 늘리기</option><option value="꾸준히 운동하기">꾸준히 운동하기</option><option value="체중 감량">체중 감량</option><option value="근력 향상">근력 향상</option><option value="기타">기타</option></select></label>
+                  <label><span>연령대 (선택)</span><select value={coachContext.ageGroup} onChange={(e) => setCoachContext((current) => ({ ...current, ageGroup: e.target.value }))}><option value="">선택 안 함</option><option value="20대 이하">20대 이하</option><option value="30대">30대</option><option value="40대">40대</option><option value="50대">50대</option><option value="60대 이상">60대 이상</option></select></label>
                   <label><span>운동 경험</span><select value={coachContext.experience} onChange={(e) => { setCoachContext((current) => ({ ...current, experience: e.target.value })); setProfileSaved(false); setProfileMessage(""); }}><option value="">선택 안 함</option><option value="초보">초보</option><option value="중급">중급</option><option value="숙련">숙련</option></select></label>
                   <label><span>피로도 (1~10)</span><input type="number" min="1" max="10" step="1" value={coachContext.fatigue} onChange={(e) => setCoachContext((current) => ({ ...current, fatigue: e.target.value }))} placeholder="예: 4" /></label>
                   <label><span>최근 수면 (시간)</span><input type="number" min="0" max="24" step="0.5" value={coachContext.sleepHours} onChange={(e) => setCoachContext((current) => ({ ...current, sleepHours: e.target.value }))} placeholder="예: 7.5" /></label>
@@ -374,13 +385,13 @@ export default function Home() {
                   <label><span>통증·불편감</span><select value={coachContext.painStatus} onChange={(e) => setCoachContext((current) => ({ ...current, painStatus: e.target.value as CoachContext["painStatus"], painDetails: e.target.value === "none" ? "" : current.painDetails }))}><option value="none">없음</option><option value="mild">가벼운 불편감</option><option value="pain">통증이 있음</option></select></label>
                 </div>
                 {coachContext.painStatus !== "none" && <label className="context-pain-details"><span>불편한 부위나 상황 (선택)</span><input maxLength={200} value={coachContext.painDetails} onChange={(e) => setCoachContext((current) => ({ ...current, painDetails: e.target.value }))} placeholder="진단명이 아닌 느끼는 증상만 적어주세요." /></label>}
-                <label className="data-consent"><input type="checkbox" checked={hasDataConsent} onChange={(e) => setHasDataConsent(e.target.checked)} /><span>계정에 저장된 운동 기록·목표·운동 경험과 위에 입력한 컨디션 정보를 Codyssey AI API로 보내 코칭 답변을 만드는 데 동의합니다.</span></label>
-                <p className="form-note">컨디션 정보는 현재 앱 DB에 저장하지 않고 요청에만 포함합니다. 이름·연락처 등 식별 정보는 입력하지 마세요.</p>
+                <label className="data-consent"><input type="checkbox" checked={hasDataConsent} onChange={(e) => setHasDataConsent(e.target.checked)} /><span>계정 운동 기록·목표·운동 경험과 선택한 연령대 및 컨디션 정보를 Codyssey AI API로 보내 코칭 답변을 만드는 데 동의합니다.</span></label>
+                <p className="form-note">연령대와 당일 컨디션은 계정에 저장하지 않고 코칭 요청에만 포함합니다. 이름·연락처 등 식별 정보는 입력하지 마세요.</p>
                 {supabaseUser && <div className="profile-save-row"><button className="text-button" type="button" onClick={saveCoachProfile} disabled={profileSaving}>{profileSaving ? "저장 중…" : "목표·운동 경험을 계정에 저장"}</button><span>{profileSaved ? "계정에 저장됨" : "저장 전"}</span></div>}
                 {profileMessage && <p className={`form-note ${profileSaved ? "" : "form-error"}`} role={profileSaved ? "status" : "alert"}>{profileMessage}</p>}
               </div>
-              <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>{activities.some((activity) => activity.source === "user") ? `직접 입력한 운동 ${activities.filter((activity) => activity.source === "user").length}건과 최근 기록을 함께 보냅니다.` : "아직 직접 입력한 기록이 없어요. 예시 기록은 데모 데이터로 표시됩니다."}</p></div>
-              {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록을 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}</div>}
+              <div className="coach-insight"><span className="insight-label">최근 기록에서 본 흐름</span><p>{supabaseUser && activities.some((activity) => activity.source === "user") ? "계정의 운동 기록은 질문에 따라 AI가 조회해 코칭에 활용합니다. 예시 기록은 AI 입력에서 제외됩니다." : "계정에 저장된 운동 기록은 AI가 필요할 때 조회해 코칭에 활용합니다. 예시 기록은 조회되지 않습니다."}</p></div>
+              {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록과 참고 자료를 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && usedRecentActivities && <p className="form-note" role="status">최근 운동 기록을 조회해 답변에 반영했어요.</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}{coachAnswer && knowledgeSources.length > 0 && <div className="coach-sources"><b>AI 답변 참고 자료</b><ul>{knowledgeSources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a><span> · {source.publisher}</span></li>)}</ul></div>}</div>}
               <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" maxLength={1000} disabled={isAsking} /><button type="submit" aria-label="질문 보내기" disabled={isAsking || !question.trim() || !storageReady || !authReady}>{isAsking ? "…" : "↑"}</button></form>
               {!supabaseUser && <p className="form-note">AI 코치를 이용하려면 먼저 Google 로그인이 필요합니다.</p>}
               <p className="form-note">운동 조언은 참고용이며, 통증이나 건강 문제가 있으면 전문가와 상담하세요.</p>
@@ -401,6 +412,7 @@ function CoachResponse({ answer }: { answer: CoachAnswer }) {
   return <article className={`coach-answer safety-${answer.safety_level}`}>
     <strong>{answer.summary}</strong>
     <p>{answer.coaching_message}</p>
+    {answer.nutrition_guidance.length > 0 && <div><b>식단 참고</b><ul>{answer.nutrition_guidance.map((item, index) => <li key={`nutrition-${index}`}>{item}</li>)}</ul></div>}
     <div className="answer-workout"><b>{workout.type}</b><span>{workout.duration_min}분 · {workout.intensity.rpe === null ? "강도 안내 없음" : `RPE ${workout.intensity.rpe}`} · {workout.intensity.description}</span>{workout.details.length > 0 && <ul>{workout.details.map((item, index) => <li key={`detail-${index}`}>{item}</li>)}</ul>}</div>
     {answer.reason.length > 0 && <div><b>추천 이유</b><ul>{answer.reason.map((item, index) => <li key={`reason-${index}`}>{item}</li>)}</ul></div>}
     {answer.precautions.length > 0 && <div><b>주의사항</b><ul>{answer.precautions.map((item, index) => <li key={`precaution-${index}`}>{item}</li>)}</ul></div>}

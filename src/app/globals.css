@@ -8,6 +8,7 @@
 .coach-answer strong{display:block;color:#26392e;font-size:13px}
 .coach-answer p{margin:8px 0;color:#586158;font-size:11px;line-height:1.7}
 .coach-answer>div{margin-top:12px}
+.coach-sources{margin-top:10px;font-size:10px;line-height:1.6;color:#818780}.coach-sources a{color:var(--deep);text-decoration:underline;text-underline-offset:2px}.coach-sources ul{margin:4px 0 0;padding-left:17px}
 .coach-answer b{color:#34493b}
 .coach-answer ul{margin:5px 0 0;padding-left:18px}
 .coach-answer li+li{margin-top:3px}
