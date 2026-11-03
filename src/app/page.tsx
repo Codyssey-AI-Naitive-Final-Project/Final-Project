@@ -394,7 +394,7 @@ export default function Home() {
               {asked && <div className="chat-reply"><span className="user-question">{asked}</span>{isAsking && <p role="status">기록과 참고 자료를 살펴보고 코칭을 작성하고 있어요…</p>}{coachError && <p role="alert">{coachError}</p>}{coachAnswer && usedRecentActivities && <p className="form-note" role="status">최근 운동 기록을 조회해 답변에 반영했어요.</p>}{coachAnswer && <CoachResponse answer={coachAnswer} />}{coachAnswer && knowledgeSources.length > 0 && <div className="coach-sources"><b>AI 답변 참고 자료</b><ul>{knowledgeSources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a><span> · {source.publisher}</span></li>)}</ul></div>}</div>}
               <form className="chat-form" onSubmit={askCoach}><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="예: 축구 다음 날 러닝은 어떻게 할까?" aria-label="코치에게 질문" maxLength={1000} disabled={isAsking} /><button type="submit" aria-label="질문 보내기" disabled={isAsking || !question.trim() || !storageReady || !authReady}>{isAsking ? "…" : "↑"}</button></form>
               {!supabaseUser && <p className="form-note">AI 코치를 이용하려면 먼저 Google 로그인이 필요합니다.</p>}
-              <p className="form-note">운동 조언은 참고용이며, 통증이나 건강 문제가 있으면 전문가와 상담하세요.</p>
+              <p className="form-note">AI가 생성한 운동 가이드입니다. 의료 진단·처방이 아니며, 통증이나 건강 문제가 있으면 전문가와 상담하세요.</p>
             </div>
           </section>
         )}
