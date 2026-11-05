@@ -154,7 +154,7 @@
 "recommended_workout": {
 "type": "운동 종류",
 "duration_min": 0,
-"intensity": "RPE 1-10 또는 강도 설명",
+"intensity": "강도 설명",
 "details": [
 "운동 구성 1",
 "운동 구성 2"
